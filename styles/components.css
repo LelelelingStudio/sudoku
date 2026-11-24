@@ -1,305 +1,148 @@
-/* =========================================================
-   Chess — Shared component styles
-   Lelele Games
-   ========================================================= */
-
-/* Buttons */
-button {
-  -webkit-tap-highlight-color: transparent;
-}
-
-.mode-button:active,
-.icon-button:active,
-.game-controls button:active {
-  transform: translateY(1px);
-}
-
-.mode-button:focus-visible,
-.icon-button:focus-visible,
-.game-controls button:focus-visible {
-  outline: 3px solid var(--color-accent);
-  outline-offset: 3px;
-}
-
-/* Game status and notices */
-.game-status {
-  min-height: 28px;
-  font-size: 0.95rem;
-  font-weight: 650;
-}
-
-.game-status[data-state="check"] {
-  color: #f0b36e;
-}
-
-.game-status[data-state="checkmate"] {
-  color: #f08b79;
-}
-
-.game-status[data-state="draw"] {
-  color: #c9bb9f;
-}
-
-/* Player information */
-.player-panel {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 12px 16px;
+.icon-button {
+  background: var(--color-panel);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-medium);
-  background: var(--color-surface);
-}
-
-.player-info {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 10px;
-}
-
-.player-name {
-  overflow: hidden;
   color: var(--color-text);
-  font-weight: 700;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  border-radius: 999px;
+  padding: 7px 14px;
+  font-size: 13px;
 }
 
-.player-detail {
+.icon-button:hover { border-color: var(--color-accent); }
+
+.button-primary, .button-secondary, .button-quiet {
+  border-radius: 10px;
+  padding: 10px 18px;
+  font-size: 14px;
+  font-weight: 600;
+  border: 1px solid transparent;
+}
+
+.button-primary { background: var(--color-accent); color: #2a1c0c; }
+.button-primary:hover { background: var(--color-accent-strong); }
+.button-secondary { background: var(--color-panel); color: var(--color-text); border-color: var(--color-border); }
+.button-secondary:hover { border-color: var(--color-accent); }
+.button-quiet { background: transparent; color: var(--color-text-muted); }
+
+.form-select {
+  width: 100%;
+  background: var(--color-panel);
+  color: var(--color-text);
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  padding: 11px 12px;
+  appearance: none;
+}
+
+.status-pill {
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: 999px;
+  padding: 6px 12px;
+  font-size: 12px;
   color: var(--color-text-muted);
-  font-size: 0.8rem;
 }
 
-/* Captured pieces */
-.captured-panel {
-  display: flex;
-  min-height: 34px;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 3px;
-  color: var(--color-text-muted);
-}
-
-.captured-piece {
-  font-family: "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols 2", serif;
-  font-size: 1.25rem;
-  line-height: 1;
-}
-
-/* Dialogs and overlays */
 .dialog-backdrop {
   position: fixed;
-  z-index: 20;
   inset: 0;
+  z-index: 50;
+  background: rgba(8, 6, 4, 0.72);
   display: grid;
   place-items: center;
   padding: 20px;
-  background: rgba(8, 6, 4, 0.72);
-  backdrop-filter: blur(7px);
 }
+
+.dialog-backdrop[hidden] { display: none; }
 
 .dialog {
-  width: min(100%, 440px);
-  max-height: min(82vh, 680px);
-  overflow: auto;
-  padding: 26px;
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-large);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-soft);
-}
-
-.dialog-title {
-  margin: 0;
-  color: var(--color-text);
-  font-size: 1.35rem;
-  font-weight: 750;
-}
-
-.dialog-copy {
-  margin: 10px 0 0;
-  white-space: pre-line;
-  color: var(--color-text-muted);
-  line-height: 1.6;
-}
-
-.dialog-actions {
-  display: flex;
-  flex-wrap: wrap;
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 24px;
-}
-
-/* Form controls */
-.form-field {
-  display: grid;
-  gap: 7px;
-  margin-top: 18px;
-}
-
-.form-label {
-  color: var(--color-text-muted);
-  font-size: 0.85rem;
-  font-weight: 650;
-}
-
-.form-input,
-.form-select {
   width: 100%;
-  min-height: 44px;
-  padding: 10px 12px;
+  max-width: 480px;
+  max-height: 86vh;
+  overflow-y: auto;
+  background: var(--color-panel);
   border: 1px solid var(--color-border);
-  border-radius: var(--radius-small);
-  background: var(--color-page-soft);
-  color: var(--color-text);
+  border-radius: 18px;
+  padding: 26px;
+  box-shadow: var(--shadow);
 }
 
-.form-input::placeholder {
-  color: var(--color-text-subtle);
-}
+.dialog-title { margin: 0 0 10px; font-size: 22px; }
+.dialog-copy { margin: 0 0 18px; color: var(--color-text-muted); font-size: 14px; white-space: pre-line; }
+.dialog-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 10px; margin-top: 20px; }
 
-.form-input:focus,
-.form-select:focus {
-  border-color: var(--color-accent);
-  outline: 2px solid rgba(213, 168, 106, 0.18);
-}
-
-/* Reusable button variants */
-.button-primary,
-.button-secondary,
-.button-quiet {
-  min-height: 42px;
-  padding: 9px 16px;
-  border: 1px solid transparent;
-  border-radius: var(--radius-small);
-  font-weight: 700;
-  cursor: pointer;
-  transition:
-    background 160ms ease,
-    border-color 160ms ease,
-    transform 160ms ease;
-}
-
-.button-primary {
-  background: var(--color-accent);
-  color: var(--color-accent-contrast);
-}
-
-.button-primary:hover {
-  background: var(--color-accent-hover);
-}
-
-.button-secondary {
-  border-color: var(--color-border);
-  background: var(--color-surface-raised);
-  color: var(--color-text);
-}
-
-.button-secondary:hover {
-  border-color: rgba(213, 168, 106, 0.48);
-}
-
-.button-quiet {
-  background: transparent;
-  color: var(--color-text-muted);
-}
-
-.button-quiet:hover {
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--color-text);
-}
-
-/* Small status labels */
-.status-pill {
-  display: inline-flex;
-  min-height: 24px;
+.dialog-list { display: grid; gap: 8px; margin: 12px 0; }
+.dialog-row {
+  display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 9px;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px 13px;
+  background: var(--color-bg-soft);
   border: 1px solid var(--color-border);
-  border-radius: 999px;
-  color: var(--color-text-muted);
-  font-size: 0.72rem;
-  font-weight: 700;
+  border-radius: 10px;
+  font-size: 14px;
 }
 
-.status-dot {
-  width: 7px;
-  height: 7px;
-  flex: 0 0 auto;
-  border-radius: 50%;
-  background: #a79a87;
-}
-
-.status-pill[data-status="connected"] .status-dot {
-  background: #7db58a;
-}
-
-.status-pill[data-status="disconnected"] .status-dot {
-  background: #cf826f;
-}
-
-/* Utility states */
-.is-disabled,
-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.48;
-}
-
-.visually-hidden {
-  position: absolute !important;
-  width: 1px !important;
-  height: 1px !important;
-  overflow: hidden !important;
-  clip: rect(0, 0, 0, 0) !important;
-  white-space: nowrap !important;
-  clip-path: inset(50%) !important;
-}
+.dialog-row input[type="checkbox"] { accent-color: var(--color-accent); width: 18px; height: 18px; }
 
 .notification {
   position: fixed;
-  z-index: 30;
-  right: 20px;
-  bottom: 20px;
-  max-width: min(360px, calc(100vw - 40px));
-  padding: 12px 16px;
+  left: 50%;
+  bottom: 28px;
+  transform: translateX(-50%);
+  z-index: 60;
+  background: var(--color-accent);
+  color: #2a1c0c;
+  padding: 11px 20px;
+  border-radius: 999px;
+  font-size: 13px;
+  font-weight: 600;
+  box-shadow: var(--shadow);
+  max-width: 88vw;
+  text-align: center;
+}
+
+.notification[hidden] { display: none; }
+.notification.error { background: var(--color-conflict); color: #fff8f5; }
+
+.variant-card {
+  text-align: left;
+  background: var(--color-panel);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 18px;
+  color: var(--color-text);
+  transition: border-color 0.15s ease, transform 0.15s ease;
+}
+
+.variant-card:hover { border-color: var(--color-accent); transform: translateY(-2px); }
+.variant-card strong { display: block; font-size: 16px; margin-bottom: 6px; }
+.variant-card span { color: var(--color-text-muted); font-size: 13px; line-height: 1.55; }
+.variant-glyph { display: block; font-size: 22px; margin-bottom: 10px; color: var(--color-accent); }
+
+.stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 22px; }
+.stat-card {
+  background: var(--color-panel);
   border: 1px solid var(--color-border);
   border-radius: var(--radius-small);
-  background: var(--color-surface-raised);
-  box-shadow: var(--shadow-soft);
-  color: var(--color-text);
-  font-size: 0.88rem;
+  padding: 14px;
 }
+.stat-card span { display: block; color: var(--color-text-muted); font-size: 12px; }
+.stat-card strong { display: block; font-size: 20px; margin-top: 5px; font-variant-numeric: tabular-nums; }
+
+.stats-section-title { font-size: 14px; color: var(--color-accent); margin: 22px 0 8px; }
+.stats-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.stats-table th, .stats-table td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--color-border); }
+.stats-table th { color: var(--color-text-muted); font-weight: 500; }
+.empty-note { color: var(--color-text-muted); font-size: 14px; }
+
+.result-line { display: flex; justify-content: space-between; gap: 20px; padding: 8px 0; border-bottom: 1px solid var(--color-border); font-size: 14px; }
+.result-line span { color: var(--color-text-muted); }
+.result-line strong { font-variant-numeric: tabular-nums; }
+.result-score { font-size: 30px; font-weight: 800; color: var(--color-accent); text-align: center; margin: 12px 0; }
 
 @media (max-width: 520px) {
-  .dialog {
-    padding: 21px;
-    border-radius: var(--radius-medium);
-  }
-
-  .player-panel {
-    padding: 10px 12px;
-  }
-
-  .dialog-actions {
-    justify-content: stretch;
-  }
-
-  .dialog-actions > button {
-    flex: 1 1 auto;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .mode-button,
-  .icon-button,
-  .game-controls button,
-  .button-primary,
-  .button-secondary,
-  .button-quiet {
-    transition: none;
-  }
+  .dialog { padding: 20px; }
+  .dialog-actions { justify-content: stretch; }
+  .dialog-actions button { flex: 1; }
 }

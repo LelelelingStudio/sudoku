@@ -1,180 +1,86 @@
-/* =========================================================
-   Chess — Board styles
-   Lelele Games
-   ========================================================= */
-
-.chessboard {
-  --board-size: min(76vw, 620px);
-  display: grid;
-  width: var(--board-size);
-  aspect-ratio: 1;
-  grid-template-columns: repeat(8, minmax(0, 1fr));
-  grid-template-rows: repeat(8, minmax(0, 1fr));
-  overflow: hidden;
-  margin-inline: auto;
-  border: 8px solid #5c3e27;
-  border-radius: 12px;
-  background: #5c3e27;
-  box-shadow:
-    0 22px 55px rgba(0, 0, 0, 0.38),
-    inset 0 0 0 1px rgba(255, 235, 202, 0.2);
-  user-select: none;
-  -webkit-user-select: none;
+.sudoku-board {
+  position: relative;
+  width: min(100%, 560px);
+  --cell-size: 34px;
+  background: #fffdf8;
+  border: 2px solid #5c4b3c;
+  border-radius: 10px;
+  padding: 3px;
+  box-shadow: var(--shadow);
   touch-action: manipulation;
 }
 
-.chess-square {
+.board-grid {
+  display: grid;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  gap: 0;
+}
+
+.cell {
   position: relative;
   display: grid;
+  place-items: center;
   min-width: 0;
   min-height: 0;
-  place-items: center;
-  aspect-ratio: 1;
-  border: 0;
   padding: 0;
-  cursor: pointer;
-  isolation: isolate;
+  border: 0;
+  border-right: 1px solid #c9bfb0;
+  border-bottom: 1px solid #c9bfb0;
+  background: var(--color-light-square);
+  color: #e9e2d8;
+  font-size: clamp(14px, 3.2vw, 26px);
+  line-height: 1;
+  user-select: none;
+  -webkit-tap-highlight-color: transparent;
 }
 
-.chess-square--light {
-  background: var(--color-light-square, #ead8b8);
-}
+.cell.alt { background: var(--color-dark-square); }
+.sudoku-board[style*="--board-size: 16"] .cell { font-size: clamp(9px, 2.1vw, 16px); }
 
-.chess-square--dark {
-  background: var(--color-dark-square, #98704c);
-}
+.cell.box-right { border-right: 3px solid #5c4b3c; }
+.cell.box-bottom { border-bottom: 3px solid #5c4b3c; }
+.cell.samurai-edge { border-right-width: 3px; border-bottom-width: 3px; border-color: #8b6b4c; }
 
-.chess-square:focus-visible {
-  z-index: 2;
-  outline: 3px solid #f5c879;
-  outline-offset: -4px;
-}
+.cell.inactive { background: transparent; border-color: transparent; pointer-events: none; }
+.cell.given { color: var(--color-given); font-weight: 800; }
+.cell.user-value { color: var(--color-user); font-weight: 600; }
+.cell.selected { background: #f5d79c !important; box-shadow: inset 0 0 0 2px #b58138; z-index: 2; }
+.cell.peer { background: #efe2c8 !important; }
+.cell.same-value { background: #e7d2a7 !important; color: #7c4c22; }
+.cell.conflict, .cell.wrong { background: #f2c7c2 !important; color: var(--color-conflict) !important; }
+.cell.hint { background: #d5ebd2 !important; box-shadow: inset 0 0 0 2px var(--color-success); }
 
-.chess-square.is-selected::after,
-.chess-square.is-legal-target::after,
-.chess-square.is-last-move::before,
-.chess-square.is-in-check::before {
+.cell-value { pointer-events: none; }
+
+.cell-notes {
   position: absolute;
-  z-index: -1;
-  content: "";
+  inset: 2px;
+  display: none;
+  grid-template-columns: repeat(var(--note-cols, 3), 1fr);
+  grid-auto-rows: 1fr;
+  align-items: center;
+  justify-items: center;
+  font-size: clamp(7px, 1.3vw, 11px);
+  line-height: 1;
+  color: #6d5c4c;
+  white-space: pre;
   pointer-events: none;
 }
 
-.chess-square.is-selected::after {
-  inset: 0;
-  background: rgba(246, 202, 105, 0.46);
-}
+.cell-notes.visible { display: grid; }
 
-.chess-square.is-last-move::before {
-  inset: 0;
-  background: rgba(235, 207, 104, 0.25);
-}
-
-.chess-square.is-legal-target::after {
-  width: 27%;
-  aspect-ratio: 1;
-  border-radius: 50%;
-  background: rgba(38, 31, 24, 0.28);
-}
-
-.chess-square.is-legal-target:has(.chess-piece)::after {
-  width: 78%;
-  border: 5px solid rgba(38, 31, 24, 0.3);
-  background: transparent;
-}
-
-.chess-square.is-in-check::before {
-  inset: 0;
-  background: radial-gradient(
-    circle,
-    rgba(210, 71, 53, 0.62),
-    rgba(210, 71, 53, 0.08) 72%
-  );
-}
-
-.chess-piece {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  width: 88%;
-  height: 88%;
-  place-items: center;
-  font-family: "Apple Symbols", "Segoe UI Symbol", "Noto Sans Symbols 2", serif;
-  font-size: clamp(1.5rem, 6.2vw, 4.35rem);
-  line-height: 1;
-  cursor: grab;
-  filter: drop-shadow(0 3px 1px rgba(0, 0, 0, 0.22));
-  transition:
-    transform 140ms ease,
-    filter 140ms ease;
-}
-
-.chess-piece:active {
-  cursor: grabbing;
-}
-
-.chess-piece--white {
-  color: #fff7e8;
-  -webkit-text-stroke: 1px rgba(86, 58, 35, 0.62);
-  text-shadow:
-    0 1px 0 #bda27e,
-    0 3px 0 rgba(74, 48, 28, 0.22);
-}
-
-.chess-piece--black {
-  color: #493426;
-  -webkit-text-stroke: 0.7px rgba(255, 231, 195, 0.45);
-  text-shadow:
-    0 1px 0 rgba(255, 235, 205, 0.28),
-    0 3px 0 rgba(0, 0, 0, 0.2);
-}
-
-.chess-square:hover .chess-piece {
-  transform: translateY(-2px);
-  filter: drop-shadow(0 5px 2px rgba(0, 0, 0, 0.25));
-}
-
-.board-coordinate {
+.board-overlay {
   position: absolute;
-  z-index: 2;
-  left: 4px;
-  bottom: 2px;
-  color: rgba(53, 37, 25, 0.72);
-  font-size: clamp(0.48rem, 1vw, 0.68rem);
-  font-weight: 700;
-  line-height: 1;
+  inset: 3px;
+  width: calc(100% - 6px);
+  height: calc(100% - 6px);
   pointer-events: none;
+  z-index: 3;
+  overflow: visible;
 }
 
-.chess-square--dark .board-coordinate {
-  color: rgba(255, 239, 215, 0.78);
-}
-
-@media (max-width: 700px) {
-  .chessboard {
-    --board-size: min(92vw, 620px);
-    border-width: 5px;
-    border-radius: 8px;
-  }
-
-  .chess-piece {
-    width: 94%;
-    height: 94%;
-    font-size: clamp(1.45rem, 10vw, 3.7rem);
-  }
-
-  .chess-square.is-legal-target:has(.chess-piece)::after {
-    border-width: 3px;
-  }
-
-  .board-coordinate {
-    left: 2px;
-    bottom: 1px;
-  }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .chess-piece {
-    transition: none;
-  }
+@media (max-width: 520px) {
+  .sudoku-board { width: 100%; --cell-size: 28px; }
+  .cell { font-size: clamp(12px, 4.4vw, 20px); }
 }

@@ -1,0 +1,18 @@
+# System / editor files
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# Dependencies and build output (not used at runtime)
+node_modules/
+dist/
+build/
+coverage/
+
+# Reference material kept locally, not part of the deployed game
+sudoku-main/
+super-sudoku-master/
+
+# Browser smoke-test artifacts
+.playwright-cli/

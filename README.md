@@ -1,112 +1,93 @@
-# Chess — Lelele Games
+# Lelele Sudoku — 了了了数独
 
-A pure front-end chess game for the Lelele Games platform and standalone browsers.
-
-Built with native HTML, CSS and JavaScript ES Modules. No build step, no Node.js
-server, no Python backend and no database are required at runtime.
+A pure front-end sudoku game for the Lelele Games platform and standalone browsers.
+Built with native HTML, CSS and JavaScript ES Modules. No build step, no backend,
+no database and no user account are required.
 
 ## Features
 
-- **Local two-player game** with full move validation.
-- **Computer opponent** with Easy / Medium / Hard levels, running in a Web Worker.
-- **Online two-player game** over WebRTC data channels.
-- **Complete chess rules**: castling, en passant, promotion, check, checkmate,
-  stalemate, threefold repetition, the 50-move rule and insufficient material.
-- **Move history** in Standard Algebraic Notation, undo/redo, resign and draw.
-- **Animations** for movement, captures and captured-piece gravestones.
-- **English / Simplified Chinese** interface (English by default).
-- **Local persistence** for settings, statistics, match records and saved games,
-  with JSON export/import and safe degradation when `localStorage` is blocked.
-- **LeleleSDK integration** for player name, score, leaderboard, rating, sharing
-  and game navigation when running inside the platform player.
+- **Board sizes**: 4 × 4 Mini, 6 × 6 Mini, 9 × 9 Classic and 16 × 16 Mega (1–9, A–G).
+- **Variants**: Diagonal, Jigsaw, Killer, Thermo, Consecutive, Windoku, Arrow and Samurai.
+  Every variant has real constraint checking, solving and generation logic.
+- **Modes**: Classic, Daily Challenge, Time Attack and Variant Puzzles.
+- **Five difficulty levels** based on actual solving techniques, search depth and clue
+  density, not on the number of empty cells alone.
+- **Unique-solution generator**: every generated puzzle is verified to have exactly one
+  solution. Deterministic seeds power reproducible puzzles and the daily challenge.
+- **Human-style solver**: ten logical techniques (Naked/Hidden Singles, Pairs, Triples,
+  Pointing, Box-Line, X-Wing, Swordfish, XY-Wing) with explanations and step-by-step hints.
+- **Play tools**: notes, auto candidates, instant error check, undo/redo, hints, erase,
+  timer, keyboard input, mobile number pad, autosave and resume.
+- **Local records**: per size, variant, difficulty and mode statistics, best and average
+  times, mistake/hint totals and local daily streaks.
+- **English / Simplified Chinese**, English by default.
+- **LeleleSDK** integration with graceful fallback outside the platform player.
+
+Daily Challenge and all statistics are stored locally on the device. This project does
+not provide a global daily leaderboard or cloud saves.
 
 ## Running locally
 
-ES Modules require HTTP, so open the folder through a static server:
+ES Modules require HTTP, so serve the folder through any static server:
 
 ```bash
-cd chess
+cd sudoku
 python3 -m http.server 8000
-# then open http://localhost:8000/
+# open http://localhost:8000/
 ```
 
-Any static host (GitHub Pages, Cloudflare Pages, etc.) works. Deploy the whole
-folder as-is; no generated files are needed.
+Any static host works (GitHub Pages, Cloudflare Pages, nginx, etc.). Deploy the whole
+folder as-is; generated puzzles are computed in the browser and no build output is needed.
 
-## Online play — important limitation
+`index.html` is the only entry point. Generation and solving run in a Web Worker when
+available, with an in-page fallback if Workers are unavailable.
 
-A four-digit room code **cannot** by itself connect two browsers on the internet.
-There is no signaling server in this repository, and adding one would require a
-backend, which is outside the project's pure static architecture.
+## Controls
 
-This project therefore uses a **manual signaling adapter**:
-
-1. The host creates a room and receives a four-digit code plus a generated
-   "Your signal" text (SDP with ICE candidates embedded).
-2. The guest enters the same code and pastes the host's signal, then copies the
-   generated answer back to the host.
-3. The host pastes the answer. Both sides then connect directly over WebRTC.
-
-You can exchange the two texts through any channel you already have (chat,
-email, messaging). No account, API key or server is involved.
-
-Limitations:
-
-- Peers behind restrictive symmetric NAT may still fail to connect because no
-  TURN relay is configured. Adding a TURN service would require an external
-  credential and is not included.
-- Reconnection re-runs the same handshake; the host resends the authoritative
-  move list, which the guest validates through the rules engine before use.
-
-## LeleleSDK
-
-`src/sdk.js` is a thin adapter around the official script:
-
-```html
-<script src="https://game.leleleling.site/lelele-sdk.js"></script>
-```
-
-The official SDK exposes `window.LeleleSDK` (it has no `init()` method and no ES
-module export). See <https://game.leleleling.site/sdk-docs>. Outside the
-platform player all SDK operations safely no-op.
+- Mouse / touch: select a cell, then tap a digit on the number pad.
+- Keyboard: arrow keys move, `1`–`9` and `A`–`G` enter digits, `N` toggles notes,
+  `H` opens hints, `Z` undo, `Y` redo, `Backspace` erases, `Space` pauses.
 
 ## Tests
 
-Rule, AI, protocol and storage-independent tests use only Node's built-in test
-runner:
+Tests use only Node's built-in test runner:
 
 ```bash
-cd chess
 node --test tests/*.test.mjs
 ```
 
-Browser smoke tests require a static server; the project has no Playwright or
-other runtime dependency.
+There are no runtime or development dependencies.
+
+## LeleleSDK
+
+`src/sdk.js` is the same verified adapter used by other Lelele Games projects. It loads
+the official script on demand and safely no-ops outside the platform player. The game
+calls `submitScore` on completion and can call `shareScore`, `nextGame`, `getLeaderboard`,
+`getPlayerName`, `isInPlatform` and `openDetail` when the SDK reports platform context.
 
 ## Project structure
 
 ```
-index.html          Page structure
-styles/             Board, components, layout and animation styles
-src/chess-rules.js  Pure rules engine (no DOM)
-src/game.js         Game controller: moves, undo, history, results
-src/ai.js           Minimax + alpha-beta evaluation
-src/ai-worker.js    Web Worker message protocol
-src/ui.js           Board rendering and interaction
-src/animations.js   Movement, capture and gravestone effects
-src/language.js     English / Chinese strings and language manager
-src/storage.js      Settings, statistics, matches and saved games
-src/sdk.js          LeleleSDK adapter
-src/network.js      WebRTC transport + manual signaling adapter
-src/online.js       Room, handshake and game events
-src/main.js         Application controller
-tests/              Node test runner suites
+index.html              Page entry
+styles/                 Layout, components, board, variants and animations
+src/config.js           Sizes, symbols, modes and difficulty configuration
+src/constraints.js      Generic board spec and constraint validation
+src/solver.js           Propagation + backtracking solver, solution counting
+src/techniques.js       Human solving techniques and deduction steps
+src/difficulty.js       Multi-factor difficulty evaluation
+src/generator.js        Seeded full-grid generation, digging and variant builders
+src/daily-challenge.js  Deterministic local-date puzzles
+src/game-state.js       Values, notes, history, mistakes, hints and saves
+src/storage.js          Versioned localStorage adapter
+src/statistics.js       Local statistics aggregation
+src/board.js            Board rendering and variant overlays
+src/main.js             Application controller
+src/solver-worker.js    Web Worker task protocol
+src/language.js         English / Chinese strings
+src/sound.js            WebAudio feedback
+src/animations.js       Lightweight visual feedback
+src/sdk.js              LeleleSDK adapter
+tests/                  Node test suites
 ```
 
-## Copyright
-
-Copyright © 2026 Lelele Games. All rights reserved.
-
-This repository is provided for viewing purposes only. No permission is granted
-to use, copy, modify, redistribute, or publish this project's code or assets
-without prior written permission from the copyright holder.
+Made by Lelele Games.

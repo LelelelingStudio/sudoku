@@ -1,596 +1,244 @@
-
 /**
- * Lelele Games - Local Storage
- *
- * Stores game settings, statistics and match records.
- * Uses browser localStorage.
+ * Lelele Sudoku - versioned localStorage adapter.
+ * All data is local; no account, cloud save or server is involved.
  */
 
-const STORAGE_PREFIX = "lelele-chess:";
-
-const STORAGE_KEYS = {
-    SETTINGS: "settings",
-    STATISTICS: "statistics",
-    MATCHES: "matches",
-    SAVED_GAME: "saved-game"
-};
-
-const MAX_MATCH_RECORDS = 50;
-
-// ============================================
-// Default Data
-// ============================================
-
-export const DEFAULT_SETTINGS = {
-    language: "en",
-    sound: true,
-    soundEffects: true,
-    music: false,
-    animations: true,
-    showCoordinates: true,
-    boardTheme: "classic",
-    pieceTheme: "classic",
-    autoQueenPromotion: true,
-    difficulty: "medium"
-};
-
-export const DEFAULT_STATISTICS = {
-    gamesPlayed: 0,
-    gamesWon: 0,
-    gamesLost: 0,
-    gamesDrawn: 0,
-    totalMoves: 0,
-    bestWinStreak: 0,
-    currentWinStreak: 0,
-    lastPlayed: null
-};
-
-// ============================================
-// Storage Manager
-// ============================================
-
-export class ChessStorage {
-    constructor(options = {}) {
-        this.prefix =
-            options.prefix ?? STORAGE_PREFIX;
-
-        this.storage = null;
-
-        this.available = false;
-
-        this.initialize();
-    }
-
-    // ========================================
-    // Initialization
-    // ========================================
-
-    initialize() {
-        try {
-            if (typeof localStorage === "undefined") {
-                return false;
-            }
-
-            const testKey =
-                `${this.prefix}storage-test`;
-
-            localStorage.setItem(testKey, "test");
-
-            localStorage.removeItem(testKey);
-
-            this.storage = localStorage;
-
-            this.available = true;
-
-            return true;
-        } catch {
-            this.storage = null;
-
-            this.available = false;
-
-            return false;
-        }
-    }
-
-    isAvailable() {
-        return this.available;
-    }
-
-    // ========================================
-    // Basic operations
-    // ========================================
-
-    getKey(key) {
-        return `${this.prefix}${key}`;
-    }
-
-    set(key, value) {
-        if (!this.available || !this.storage) {
-            return false;
-        }
-
-        try {
-            this.storage.setItem(
-                this.getKey(key),
-                JSON.stringify(value)
-            );
-
-            return true;
-        } catch (error) {
-            console.error(
-                "Storage save error:",
-                error
-            );
-
-            return false;
-        }
-    }
-
-    get(key, fallback = null) {
-        if (!this.available || !this.storage) {
-            return fallback;
-        }
-
-        try {
-            const value = this.storage.getItem(
-                this.getKey(key)
-            );
-
-            if (value === null) {
-                return fallback;
-            }
-
-            return JSON.parse(value);
-        } catch (error) {
-            console.error(
-                "Storage read error:",
-                error
-            );
-
-            return fallback;
-        }
-    }
-
-    remove(key) {
-        if (!this.available || !this.storage) {
-            return false;
-        }
-
-        try {
-            this.storage.removeItem(
-                this.getKey(key)
-            );
-
-            return true;
-        } catch {
-            return false;
-        }
-    }
-
-    // ========================================
-    // Settings
-    // ========================================
-
-    getSettings() {
-        const saved = this.get(
-            STORAGE_KEYS.SETTINGS,
-            {}
-        );
-
-        const settings = {
-            ...DEFAULT_SETTINGS,
-            ...(
-                saved &&
-                typeof saved === "object" &&
-                !Array.isArray(saved)
-                    ? saved
-                    : {}
-            )
-        };
-
-        if (!["easy", "medium", "hard"].includes(settings.difficulty)) {
-            settings.difficulty = DEFAULT_SETTINGS.difficulty;
-        }
-
-        if (!["en", "zh"].includes(settings.language)) {
-            settings.language = DEFAULT_SETTINGS.language;
-        }
-
-        return settings;
-    }
-
-    saveSettings(settings) {
-        if (
-            !settings ||
-            typeof settings !== "object" ||
-            Array.isArray(settings)
-        ) {
-            return false;
-        }
-
-        const current = this.getSettings();
-
-        const updated = {
-            ...current,
-            ...settings
-        };
-
-        return this.set(
-            STORAGE_KEYS.SETTINGS,
-            updated
-        );
-    }
-
-    updateSetting(key, value) {
-        const settings = this.getSettings();
-
-        settings[key] = value;
-
-        return this.set(
-            STORAGE_KEYS.SETTINGS,
-            settings
-        );
-    }
-
-    resetSettings() {
-        return this.set(
-            STORAGE_KEYS.SETTINGS,
-            DEFAULT_SETTINGS
-        );
-    }
-
-    // ========================================
-    // Statistics
-    // ========================================
-
-    getStatistics() {
-        const saved = this.get(
-            STORAGE_KEYS.STATISTICS,
-            {}
-        );
-
-        return {
-            ...DEFAULT_STATISTICS,
-            ...(
-                saved &&
-                typeof saved === "object" &&
-                !Array.isArray(saved)
-                    ? saved
-                    : {}
-            )
-        };
-    }
-
-    saveStatistics(statistics) {
-        if (
-            !statistics ||
-            typeof statistics !== "object" ||
-            Array.isArray(statistics)
-        ) {
-            return false;
-        }
-
-        return this.set(
-            STORAGE_KEYS.STATISTICS,
-            {
-                ...DEFAULT_STATISTICS,
-                ...statistics
-            }
-        );
-    }
-
-    updateStatistics(result, totalMoves = 0) {
-        const stats = this.getStatistics();
-
-        stats.gamesPlayed += 1;
-
-        stats.totalMoves += Math.max(
-            0,
-            Number(totalMoves) || 0
-        );
-
-        stats.lastPlayed = new Date().toISOString();
-
-        switch (result) {
-            case "win":
-                stats.gamesWon += 1;
-
-                stats.currentWinStreak += 1;
-
-                stats.bestWinStreak = Math.max(
-                    stats.bestWinStreak,
-                    stats.currentWinStreak
-                );
-
-                break;
-
-            case "loss":
-                stats.gamesLost += 1;
-
-                stats.currentWinStreak = 0;
-
-                break;
-
-            case "draw":
-                stats.gamesDrawn += 1;
-
-                stats.currentWinStreak = 0;
-
-                break;
-
-            default:
-                return false;
-        }
-
-        return this.saveStatistics(stats);
-    }
-
-    resetStatistics() {
-        return this.set(
-            STORAGE_KEYS.STATISTICS,
-            DEFAULT_STATISTICS
-        );
-    }
-
-    // ========================================
-    // Match records
-    // ========================================
-
-    getMatches() {
-        const matches = this.get(
-            STORAGE_KEYS.MATCHES,
-            []
-        );
-
-        return Array.isArray(matches)
-            ? matches
-            : [];
-    }
-
-    saveMatch(match) {
-        if (
-            !match ||
-            typeof match !== "object" ||
-            Array.isArray(match)
-        ) {
-            return false;
-        }
-
-        const matches = this.getMatches();
-
-        const record = {
-            id: this.createId(),
-            date: new Date().toISOString(),
-            ...match
-        };
-
-        matches.unshift(record);
-
-        if (matches.length > MAX_MATCH_RECORDS) {
-            matches.length = MAX_MATCH_RECORDS;
-        }
-
-        return this.set(
-            STORAGE_KEYS.MATCHES,
-            matches
-        );
-    }
-
-    getMatch(id) {
-        if (!id) return null;
-
-        return this.getMatches().find(
-            match => match.id === id
-        ) ?? null;
-    }
-
-    deleteMatch(id) {
-        if (!id) return false;
-
-        const matches = this.getMatches();
-
-        const updated = matches.filter(
-            match => match.id !== id
-        );
-
-        if (updated.length === matches.length) {
-            return false;
-        }
-
-        return this.set(
-            STORAGE_KEYS.MATCHES,
-            updated
-        );
-    }
-
-    clearMatches() {
-        return this.set(
-            STORAGE_KEYS.MATCHES,
-            []
-        );
-    }
-
-    // ========================================
-    // Saved game
-    // ========================================
-
-    saveGame(gameData) {
-        if (
-            !gameData ||
-            typeof gameData !== "object" ||
-            Array.isArray(gameData)
-        ) {
-            return false;
-        }
-
-        return this.set(
-            STORAGE_KEYS.SAVED_GAME,
-            {
-                ...gameData,
-                savedAt: new Date().toISOString()
-            }
-        );
-    }
-
-    loadGame() {
-        return this.get(
-            STORAGE_KEYS.SAVED_GAME,
-            null
-        );
-    }
-
-    hasSavedGame() {
-        return this.loadGame() !== null;
-    }
-
-    deleteSavedGame() {
-        return this.remove(
-            STORAGE_KEYS.SAVED_GAME
-        );
-    }
-
-    // ========================================
-    // Data export
-    // ========================================
-
-    exportData() {
-        return {
-            application: "Lelele Chess",
-            exportedAt: new Date().toISOString(),
-            settings: this.getSettings(),
-            statistics: this.getStatistics(),
-            matches: this.getMatches(),
-            savedGame: this.loadGame()
-        };
-    }
-
-    // ========================================
-    // Data import
-    // ========================================
-
-    importData(data) {
-        if (
-            !data ||
-            typeof data !== "object" ||
-            Array.isArray(data)
-        ) {
-            return false;
-        }
-
-        if (data.application !== "Lelele Chess") {
-            return false;
-        }
-
-        let imported = true;
-
-        if (
-            data.settings &&
-            typeof data.settings === "object" &&
-            !Array.isArray(data.settings)
-        ) {
-            imported =
-                this.saveSettings(data.settings) && imported;
-        }
-
-        if (
-            data.statistics &&
-            typeof data.statistics === "object" &&
-            !Array.isArray(data.statistics)
-        ) {
-            imported =
-                this.saveStatistics(data.statistics) && imported;
-        }
-
-        if (Array.isArray(data.matches)) {
-            imported =
-                this.set(
-                    STORAGE_KEYS.MATCHES,
-                    data.matches.slice(0, MAX_MATCH_RECORDS)
-                ) && imported;
-        }
-
-        if (
-            data.savedGame &&
-            typeof data.savedGame === "object"
-        ) {
-            imported = this.saveGame(data.savedGame) && imported;
-        }
-
-        return imported;
-    }
-
-    // ========================================
-    // Clear data
-    // ========================================
-
-
-    clearAll() {
-        if (!this.available || !this.storage) {
-            return false;
-        }
-
-        try {
-            for (
-                let index = this.storage.length - 1;
-                index >= 0;
-                index--
-            ) {
-                const key = this.storage.key(index);
-
-                if (
-                    key &&
-                    key.startsWith(this.prefix)
-                ) {
-                    this.storage.removeItem(key);
-                }
-            }
-
-            try {
-                this.storage.removeItem("lelele-chess-language");
-            } catch {
-                // Already removed or inaccessible.
-            }
-
-            return true;
-        } catch (error) {
-            console.error(
-                "Storage cleanup error:",
-                error
-            );
-
-            return false;
-        }
-    }
-
-    // ========================================
-    // Utilities
-    // ========================================
-
-    createId() {
-        if (
-            typeof crypto !== "undefined" &&
-            typeof crypto.randomUUID === "function"
-        ) {
-            return crypto.randomUUID();
-        }
-
-        return (
-            Date.now().toString(36) +
-            Math.random().toString(36).slice(2)
-        );
-    }
+import { DEFAULT_SETTINGS, SCHEMA_VERSION } from "./config.js";
+
+export { DEFAULT_SETTINGS };
+
+export const STORAGE_PREFIX = "lelele-sudoku:";
+export const STORAGE_KEYS = Object.freeze({
+  SETTINGS: "settings",
+  STATISTICS: "statistics",
+  SAVES: "saves",
+  DAILY: "daily"
+});
+
+export function createEmptyStatistics() {
+  return {
+    version: SCHEMA_VERSION,
+    gamesStarted: 0,
+    gamesCompleted: 0,
+    gamesAbandoned: 0,
+    totalTimeMs: 0,
+    totalMistakes: 0,
+    totalHints: 0,
+    currentStreak: 0,
+    bestStreak: 0,
+    lastCompletedDate: null,
+    bySize: {},
+    byVariant: {},
+    byDifficulty: {},
+    byMode: {},
+    dailyHistory: {}
+  };
 }
 
-// ============================================
-// Default instance
-// ============================================
+function clone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
 
-export const storage = new ChessStorage();
+function sanitizeSettings(input) {
+  const result = { ...DEFAULT_SETTINGS };
+  if (!input || typeof input !== "object") return result;
+  const languages = ["en", "zh"];
+  const difficulties = ["easy", "medium", "hard", "expert", "master"];
+  const variants = ["classic", "diagonal", "jigsaw", "killer", "thermo", "consecutive", "windoku", "arrow", "samurai"];
+  if (languages.includes(input.language)) result.language = input.language;
+  for (const key of ["sound", "soundEffects", "animations", "autoNotes", "errorCheck", "hintsAllowed", "timer"]) {
+    if (typeof input[key] === "boolean") result[key] = input[key];
+  }
+  if (difficulties.includes(input.difficulty)) result.difficulty = input.difficulty;
+  if ([4, 6, 9, 16].includes(Number(input.boardSize))) result.boardSize = Number(input.boardSize);
+  if (variants.includes(input.variant)) result.variant = input.variant;
+  return result;
+}
 
-// ============================================
-// Factory
-// ============================================
+function sanitizeStatistics(input) {
+  const base = createEmptyStatistics();
+  if (!input || typeof input !== "object" || input.version !== SCHEMA_VERSION) return base;
+  const numeric = [
+    "gamesStarted", "gamesCompleted", "gamesAbandoned", "totalTimeMs",
+    "totalMistakes", "totalHints", "currentStreak", "bestStreak"
+  ];
+  for (const key of numeric) {
+    const value = Number(input[key]);
+    if (Number.isFinite(value) && value >= 0) base[key] = value;
+  }
+  for (const key of ["bySize", "byVariant", "byDifficulty", "byMode", "dailyHistory"]) {
+    if (input[key] && typeof input[key] === "object" && !Array.isArray(input[key])) {
+      base[key] = clone(input[key]);
+    }
+  }
+  base.lastCompletedDate = typeof input.lastCompletedDate === "string" ? input.lastCompletedDate : null;
+  return base;
+}
 
-export function createChessStorage(options = {}) {
-    return new ChessStorage(options);
+export class SudokuStorage {
+  constructor(options = {}) {
+    this.prefix = options.prefix ?? STORAGE_PREFIX;
+    this.storage = options.storage ?? null;
+    this.available = false;
+    this.initialize();
+  }
+
+  initialize() {
+    try {
+      const target = this.storage ?? globalThis.localStorage;
+      if (!target || typeof target.getItem !== "function") {
+        this.available = false;
+        return;
+      }
+      const probe = `${this.prefix}__probe__`;
+      target.setItem(probe, "1");
+      target.removeItem(probe);
+      this.storage = target;
+      this.available = true;
+    } catch {
+      this.available = false;
+      this.storage = null;
+    }
+  }
+
+  key(name) {
+    return `${this.prefix}${name}`;
+  }
+
+  get(name, fallback = null) {
+    if (!this.available) return fallback;
+    try {
+      const raw = this.storage.getItem(this.key(name));
+      if (raw === null) return fallback;
+      return JSON.parse(raw);
+    } catch {
+      return fallback;
+    }
+  }
+
+  set(name, value) {
+    if (!this.available) return false;
+    try {
+      this.storage.setItem(this.key(name), JSON.stringify(value));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  remove(name) {
+    if (!this.available) return false;
+    try {
+      this.storage.removeItem(this.key(name));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  getSettings() {
+    return sanitizeSettings(this.get(STORAGE_KEYS.SETTINGS));
+  }
+
+  saveSettings(settings) {
+    return this.set(STORAGE_KEYS.SETTINGS, sanitizeSettings(settings));
+  }
+
+  updateSetting(key, value) {
+    const settings = this.getSettings();
+    settings[key] = value;
+    return this.saveSettings(settings) ? settings : null;
+  }
+
+  getStatistics() {
+    return sanitizeStatistics(this.get(STORAGE_KEYS.STATISTICS));
+  }
+
+  saveStatistics(statistics) {
+    return this.set(STORAGE_KEYS.STATISTICS, sanitizeStatistics(statistics));
+  }
+
+  getSaves() {
+    const saves = this.get(STORAGE_KEYS.SAVES, []);
+    return Array.isArray(saves) ? saves.filter(item => item && item.id && item.state) : [];
+  }
+
+  getSave(id) {
+    return this.getSaves().find(item => item.id === id) ?? null;
+  }
+
+  saveGame(state) {
+    if (!state || !state.id) return false;
+    const saves = this.getSaves().filter(item => item.id !== state.id);
+    saves.unshift({ id: state.id, savedAt: Date.now(), state });
+    const trimmed = saves.slice(0, 8);
+    return this.set(STORAGE_KEYS.SAVES, trimmed);
+  }
+
+  deleteSave(id) {
+    return this.set(STORAGE_KEYS.SAVES, this.getSaves().filter(item => item.id !== id));
+  }
+
+  clearSaves() {
+    return this.remove(STORAGE_KEYS.SAVES);
+  }
+
+  getDailyRecords() {
+    const value = this.get(STORAGE_KEYS.DAILY, {});
+    return value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  }
+
+  getDailyRecord(key) {
+    return this.getDailyRecords()[key] ?? null;
+  }
+
+  setDailyRecord(key, record) {
+    const records = this.getDailyRecords();
+    records[key] = record;
+    return this.set(STORAGE_KEYS.DAILY, records);
+  }
+
+  exportData() {
+    return {
+      application: "Lelele Sudoku",
+      schemaVersion: SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      settings: this.getSettings(),
+      statistics: this.getStatistics(),
+      saves: this.getSaves(),
+      daily: this.getDailyRecords()
+    };
+  }
+
+  importData(data) {
+    if (!data || data.application !== "Lelele Sudoku") return false;
+    let ok = true;
+    if (data.settings) ok = this.saveSettings(data.settings) && ok;
+    if (data.statistics) ok = this.saveStatistics(data.statistics) && ok;
+    if (Array.isArray(data.saves)) ok = this.set(STORAGE_KEYS.SAVES, data.saves.slice(0, 8)) && ok;
+    if (data.daily && typeof data.daily === "object") ok = this.set(STORAGE_KEYS.DAILY, data.daily) && ok;
+    return ok;
+  }
+
+  clearAll() {
+    if (!this.available) return false;
+    let ok = true;
+    for (const name of Object.values(STORAGE_KEYS)) ok = this.remove(name) && ok;
+    try {
+      const keys = [];
+      for (let i = 0; i < this.storage.length; i += 1) {
+        const key = this.storage.key(i);
+        if (key && key.startsWith(this.prefix)) keys.push(key);
+      }
+      keys.forEach(key => this.storage.removeItem(key));
+    } catch {
+      ok = false;
+    }
+    return ok;
+  }
+}
+
+export const storage = new SudokuStorage();
+export function createStorage(options) {
+  return new SudokuStorage(options);
 }

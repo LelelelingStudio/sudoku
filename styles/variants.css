@@ -1,0 +1,74 @@
+/* Variant-specific overlay strokes, sharing the solver's geometry. */
+.cage-line {
+  stroke: #8b5e3c;
+  stroke-width: 1.4;
+  stroke-dasharray: 3 3;
+  fill: none;
+}
+
+.cage-sum {
+  fill: #8b5e3c;
+  font-size: 0.24px;
+  font-weight: 700;
+}
+
+.thermo-line {
+  stroke: #7aa5b8;
+  stroke-width: 3;
+  stroke-linecap: round;
+  fill: none;
+  opacity: 0.75;
+}
+
+.thermo-bulb {
+  fill: #6f9db3;
+  stroke: #4d7b91;
+  stroke-width: 1;
+}
+
+.consecutive-bar {
+  stroke: #6f5d8c;
+  stroke-width: 2.4;
+  stroke-linecap: round;
+}
+
+.arrow-circle {
+  fill: #fffdf8;
+  stroke: #a06a45;
+  stroke-width: 1.8;
+}
+
+.arrow-line {
+  stroke: #a06a45;
+  stroke-width: 1.2;
+  stroke-linecap: round;
+  opacity: 0.7;
+}
+
+.numpad {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(44px, 1fr));
+  gap: 8px;
+  margin: 18px auto 0;
+  max-width: 560px;
+}
+
+.numpad button {
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--color-border);
+  border-radius: 10px;
+  background: var(--color-panel);
+  color: var(--color-text);
+  font-size: clamp(17px, 3vw, 24px);
+  font-weight: 700;
+  transition: background 0.12s ease, border-color 0.12s ease;
+}
+
+.numpad button:hover:not(:disabled) { background: var(--color-panel-light); border-color: var(--color-accent); }
+.numpad button.erase { color: var(--color-conflict); font-size: 18px; }
+.numpad button:disabled { opacity: 0.3; }
+
+@media (max-width: 520px) {
+  .numpad { grid-template-columns: repeat(8, 1fr); gap: 5px; }
+  .numpad button { border-radius: 8px; }
+}

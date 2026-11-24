@@ -1,1667 +1,961 @@
 /**
- * Lelele Games - Chess
- * Application controller.
- *
- * Wires the rules engine, UI, animations, AI worker, online
- * transport, language manager, storage and LeleleSDK together.
+ * Lelele Sudoku - application controller.
+ * Wires the rules engine, worker, state machine, UI, storage and LeleleSDK.
  */
 
+import { buildSpec } from "./constraints.js";
 import {
-    COLORS,
-    PIECES,
-    squareToNotation,
-    notationToSquare
-} from "./chess-rules.js";
-
-import { createGame } from "./game.js";
-import { createChessUI } from "./ui.js";
-import { createChessAnimations } from "./animations.js";
-import { ChessAI } from "./ai.js";
-import { languageManager } from "./language.js";
+  DEFAULT_SETTINGS, VARIANTS,
+  VARIANT_NAMES, VARIANT_RULE_KEYS, TIME_ATTACK_SECONDS,
+  normalizeSetup, labelFor, symbolsFor
+} from "./config.js";
+import { createBoard } from "./board.js";
+import { createGameState } from "./game-state.js";
+import { createTimer, formatTime } from "./timer.js";
+import { createStatistics } from "./statistics.js";
+import { generateDailyPuzzle, dateKey } from "./daily-challenge.js";
+import {
+  languageManager, t, toggleLanguage, SUPPORTED_LANGUAGES
+} from "./language.js";
 import { storage } from "./storage.js";
 import * as leleleSDK from "./sdk.js";
-import {
-    createChessNetwork,
-    createManualSignaling,
-    NETWORK_EVENTS
-} from "./network.js";
-import {
-    createOnlineGame,
-    ONLINE_EVENTS
-} from "./online.js";
+import { createSound } from "./sound.js";
+import { flashCell, celebrate, revealPanel, clearAnimations } from "./animations.js";
 
-const APP_VERSION = "1.1.0";
+const SCORE_WEIGHTS = Object.freeze({
+  easy: 600, medium: 900, hard: 1300, expert: 1800, master: 2400
+});
 
-const PROMOTION_OPTIONS = [
-    PIECES.QUEEN,
-    PIECES.ROOK,
-    PIECES.BISHOP,
-    PIECES.KNIGHT
-];
+class SudokuApp {
+  constructor() {
+    this.elements = this.collectElements();
+    this.settings = { ...DEFAULT_SETTINGS, ...storage.getSettings() };
+    this.setup = {
+      size: this.settings.boardSize,
+      variant: this.settings.variant,
+      difficulty: this.settings.difficulty,
+      mode: "classic",
+      errorCheck: this.settings.errorCheck,
+      hintsAllowed: this.settings.hintsAllowed,
+      timer: this.settings.timer,
+      autoNotes: this.settings.autoNotes
+    };
+    this.state = null;
+    this.timer = null;
+    this.screen = "home";
+    this.requestId = 0;
+    this.pending = new Map();
+    this.dialogResolve = null;
+    this.dialogDismissible = true;
+    this.toastTimer = null;
+    this.saveTimer = null;
+    this.playerName = null;
+    this.statistics = createStatistics(storage);
+    this.sound = createSound({ enabled: this.settings.sound });
+    this.board = createBoard(this.elements["sudoku-board"], {
+      onCellClick: index => this.handleCellClick(index)
+    });
+    this.init();
+  }
 
-class ChessApp {
-    constructor() {
-        this.elements = this.collectElements();
+  collectElements() {
+    const ids = [
+      "home-panel", "setup-panel", "variants-panel", "stats-panel", "game-panel",
+      "continue-button", "new-game-button", "daily-button", "mode-time-attack",
+      "variants-button", "stats-button", "how-to-button", "leaderboard-button",
+      "setup-size", "setup-variant", "setup-difficulty", "setup-error-check",
+      "setup-hints", "setup-timer", "setup-auto-notes", "setup-start", "setup-back",
+      "variant-list", "stats-content", "variants-back", "stats-back",
+      "game-mode-label", "game-difficulty-label", "timer-display", "mistake-count",
+      "hint-count", "pause-button", "game-settings-button", "sudoku-board",
+      "numpad", "notes-button", "undo-button", "redo-button", "hint-button",
+      "erase-button", "restart-button", "back-button", "dialog-backdrop",
+      "dialog-title", "dialog-copy", "dialog-extra", "dialog-actions", "toast",
+      "import-file", "language-toggle", "settings-button"
+    ];
+    const elements = {};
+    for (const id of ids) elements[id] = document.getElementById(id);
+    return elements;
+  }
 
-        this.currentMode = null;
-        this.game = null;
-        this.ui = null;
-        this.animations = null;
-
-        this.aiWorker = null;
-        this.aiBusy = false;
-        this.aiRequestId = 0;
-        this.fallbackAI = new ChessAI({ difficulty: "medium" });
-
-        this.online = null;
-        this.network = null;
-        this.signaling = null;
-        this.playerName = null;
-
-        this.settings = storage.getSettings();
-        this.difficulty =
-            this.settings.difficulty ?? "medium";
-
-        this.endHandled = false;
-        this.toastTimer = null;
-
-        this.init();
+  init() {
+    languageManager.subscribe(() => this.applyTranslations());
+    if (!SUPPORTED_LANGUAGES[this.settings.language?.toUpperCase()]) {
+      this.settings.language = "en";
     }
+    languageManager.setLanguage(this.settings.language);
 
-    collectElements() {
-        const ids = [
-            "welcome-panel", "game-screen", "game-status",
-            "chessboard", "move-history", "captured-white",
-            "captured-black", "white-name", "black-name",
-            "undo-button", "redo-button", "draw-button",
-            "resign-button",
-            "restart-button", "back-button", "language-toggle",
-            "settings-button", "ai-panel", "difficulty-select",
-            "online-panel", "connection-status", "connection-label",
-            "online-room-code", "create-room-button", "room-input",
-            "join-room-button", "signal-local", "signal-remote",
-            "make-offer-button", "copy-signal-button",
-            "apply-signal-button", "online-hint",
-            "dialog-backdrop", "dialog-title", "dialog-copy",
-            "dialog-extra", "dialog-actions", "toast", "import-file"
-        ];
+    this.initWorker();
+    this.bindEvents();
+    this.populateSetup();
+    this.buildVariantList();
+    this.showScreen("home");
+    this.applyTranslations();
 
-        const elements = {};
+    leleleSDK.ensureSDK();
+    leleleSDK.getPlayerName().then(name => { this.playerName = name; });
 
-        for (const id of ids) {
-            elements[id] = document.getElementById(id);
+    if (storage.getSaves().length === 0) this.elements["continue-button"].disabled = true;
+  }
+
+  initWorker() {
+    try {
+      this.worker = new Worker(new URL("./solver-worker.js", import.meta.url), { type: "module" });
+      this.worker.addEventListener("message", event => {
+        const data = event.data ?? {};
+        const resolve = this.pending.get(data.requestId);
+        if (!resolve) return;
+        this.pending.delete(data.requestId);
+        resolve(data);
+      });
+      this.worker.addEventListener("error", () => { this.worker = null; });
+    } catch {
+      this.worker = null;
+    }
+  }
+
+  request(type, payload = {}) {
+    const requestId = ++this.requestId;
+    if (this.worker) {
+      return new Promise(resolve => {
+        this.pending.set(requestId, resolve);
+        this.worker.postMessage({ type, requestId, ...payload });
+      });
+    }
+    return this.runInline(type, payload);
+  }
+
+  async runInline(type, payload) {
+    try {
+      if (type === "generate") {
+        const { generatePuzzle } = await import("./generator.js");
+        return { ok: true, puzzle: generatePuzzle(payload.options ?? {}) };
+      }
+      const { buildSpec: build } = await import("./constraints.js");
+      const spec = build(payload.puzzle);
+      if (type === "solve") {
+        const { solve } = await import("./solver.js");
+        return { ok: true, solution: solve(spec, spec.givens, { limit: 1 }).solution };
+      }
+      if (type === "hint") {
+        const { findNextTechnique } = await import("./techniques.js");
+        const grid = spec.givens.map((value, index) => payload.values?.[index] ?? value);
+        return { ok: true, technique: findNextTechnique(spec, grid) };
+      }
+      return { ok: false, error: "UNKNOWN_TASK" };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  }
+
+  bindEvents() {
+    const el = this.elements;
+    el["language-toggle"].addEventListener("click", () => toggleLanguage());
+    el["settings-button"].addEventListener("click", () => this.openSettings());
+    el["continue-button"].addEventListener("click", () => this.continueGame());
+    el["new-game-button"].addEventListener("click", () => this.openSetup("classic"));
+    el["daily-button"].addEventListener("click", () => this.startDaily());
+    el["mode-time-attack"].addEventListener("click", () => this.openSetup("time-attack"));
+    el["variants-button"].addEventListener("click", () => this.showScreen("variants"));
+    el["stats-button"].addEventListener("click", () => this.showStats());
+    el["how-to-button"].addEventListener("click", () => this.showHowTo());
+    el["leaderboard-button"].addEventListener("click", () => this.showLeaderboard());
+    el["variants-back"].addEventListener("click", () => this.showScreen("home"));
+    el["stats-back"].addEventListener("click", () => this.showScreen("home"));
+    el["setup-back"].addEventListener("click", () => this.showScreen("home"));
+    el["setup-start"].addEventListener("click", () => this.startFromSetup());
+
+    el["pause-button"].addEventListener("click", () => this.togglePause());
+    el["game-settings-button"].addEventListener("click", () => this.showRules());
+    el["notes-button"].addEventListener("click", () => this.toggleNotes());
+    el["undo-button"].addEventListener("click", () => this.undo());
+    el["redo-button"].addEventListener("click", () => this.redo());
+    el["hint-button"].addEventListener("click", () => this.showHint());
+    el["erase-button"].addEventListener("click", () => this.erase());
+    el["restart-button"].addEventListener("click", () => this.restart());
+    el["back-button"].addEventListener("click", () => this.goHome());
+
+    el["dialog-backdrop"].addEventListener("click", event => {
+      if (event.target === el["dialog-backdrop"] && this.dialogDismissible) this.closeDialog(null);
+    });
+    el["import-file"].addEventListener("change", event => this.importData(event));
+
+    document.addEventListener("keydown", event => this.handleKeyboard(event));
+  }
+
+  populateSetup() {
+    const variantSelect = this.elements["setup-variant"];
+    variantSelect.innerHTML = "";
+    for (const variant of VARIANTS) {
+      const option = document.createElement("option");
+      option.value = variant;
+      option.dataset.i18n = VARIANT_NAMES[variant];
+      option.textContent = t(VARIANT_NAMES[variant]);
+      variantSelect.appendChild(option);
+    }
+    this.elements["setup-size"].value = String(this.setup.size);
+    this.elements["setup-difficulty"].value = this.setup.difficulty;
+    variantSelect.value = this.setup.variant;
+    this.elements["setup-error-check"].checked = this.setup.errorCheck;
+    this.elements["setup-hints"].checked = this.setup.hintsAllowed;
+    this.elements["setup-timer"].checked = this.setup.timer;
+    this.elements["setup-auto-notes"].checked = this.setup.autoNotes;
+  }
+
+  applyTranslations() {
+    document.documentElement.lang = languageManager.getLanguage();
+    document.querySelectorAll("[data-i18n]").forEach(node => {
+      node.textContent = t(node.dataset.i18n);
+    });
+    this.elements["language-toggle"].textContent = languageManager.getLanguage() === "en" ? "中文" : "EN";
+    this.buildVariantList();
+    if (this.screen === "stats") this.showStats();
+    if (this.screen === "game") this.updateGameUI();
+  }
+
+  showScreen(name) {
+    this.screen = name;
+    const mapping = {
+      home: "home-panel", setup: "setup-panel", variants: "variants-panel",
+      stats: "stats-panel", game: "game-panel"
+    };
+    for (const [key, id] of Object.entries(mapping)) {
+      this.elements[id].hidden = key !== name;
+    }
+    const panel = this.elements[mapping[name]];
+    if (panel) revealPanel(panel);
+    if (name === "home") this.elements["continue-button"].disabled = !storage.getSaves().length;
+  }
+
+  openSetup(mode = "classic") {
+    this.setup.mode = mode;
+    this.populateSetup();
+    this.showScreen("setup");
+  }
+
+  readSetup() {
+    const el = this.elements;
+    const setup = normalizeSetup({
+      size: Number(el["setup-size"].value),
+      variant: el["setup-variant"].value,
+      difficulty: el["setup-difficulty"].value,
+      mode: this.setup.mode,
+      errorCheck: el["setup-error-check"].checked,
+      hintsAllowed: el["setup-hints"].checked,
+      timer: el["setup-timer"].checked,
+      autoNotes: el["setup-auto-notes"].checked
+    });
+    this.settings = {
+      ...this.settings,
+      boardSize: setup.size,
+      variant: setup.variant,
+      difficulty: setup.difficulty,
+      errorCheck: setup.errorCheck,
+      hintsAllowed: setup.hintsAllowed,
+      timer: setup.timer,
+      autoNotes: setup.autoNotes
+    };
+    storage.saveSettings(this.settings);
+    this.setup = { ...this.setup, ...setup };
+    return setup;
+  }
+
+  async startFromSetup() {
+    const setup = this.readSetup();
+    if (setup.variant === "samurai") setup.size = 9;
+    await this.generateAndStart(setup);
+  }
+
+  async startDaily() {
+    const setup = normalizeSetup({
+      size: this.settings.boardSize,
+      variant: this.settings.variant === "samurai" ? "classic" : this.settings.variant,
+      difficulty: this.settings.difficulty,
+      mode: "daily",
+      errorCheck: this.settings.errorCheck,
+      hintsAllowed: this.settings.hintsAllowed,
+      timer: this.settings.timer,
+      autoNotes: this.settings.autoNotes
+    });
+    const key = dateKey();
+    const record = storage.getDailyRecord(key);
+    if (record?.completed) {
+      const choice = await this.showDialog({
+        title: t("dailyChallenge"),
+        copy: `${t("dailyAlreadyDone")}\n${t("dailyTomorrow")}`,
+        actions: [
+          { label: t("back"), value: "back" },
+          { label: t("playAgain"), value: "replay", primary: true }
+        ]
+      });
+      if (choice !== "replay") return;
+    }
+    this.showToast(t("generating"));
+    try {
+      const puzzle = generateDailyPuzzle(setup, new Date());
+      this.startWithPuzzle(puzzle, setup);
+    } catch {
+      this.showToast(t("generateFailed"), true);
+    }
+  }
+
+  async generateAndStart(setup) {
+    this.showToast(t("generating"));
+    const response = await this.request("generate", { options: setup });
+    if (!response.ok || !response.puzzle) {
+      this.showToast(response.error === "CANCELLED" ? t("generateFailed") : t("generateFailed"), true);
+      return;
+    }
+    this.startWithPuzzle(response.puzzle, setup);
+  }
+
+  startWithPuzzle(puzzle, setup) {
+    const normalized = normalizeSetup({ ...setup, size: puzzle.size, variant: puzzle.variant });
+    this.state = createGameState(puzzle, {
+      mode: normalized.mode,
+      errorCheck: normalized.errorCheck,
+      hintsAllowed: normalized.hintsAllowed,
+      timer: normalized.timer,
+      autoNotes: normalized.autoNotes
+    });
+    this.statistics.recordStart({
+      size: puzzle.size, variant: puzzle.variant,
+      difficulty: puzzle.difficulty, mode: normalized.mode
+    });
+    this.board.build(puzzle, buildSpec(puzzle));
+    this.buildNumpad(puzzle.size);
+    this.state.subscribe(() => this.onStateChanged());
+    this.startTimer();
+    this.showScreen("game");
+    this.updateGameUI();
+    this.saveNow();
+  }
+
+  buildNumpad(size) {
+    const pad = this.elements.numpad;
+    pad.innerHTML = "";
+    for (const symbol of symbolsFor(size)) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.dataset.value = symbol;
+      button.textContent = symbol;
+      button.addEventListener("click", () => this.handleDigit(symbol));
+      pad.appendChild(button);
+    }
+    const erase = document.createElement("button");
+    erase.type = "button";
+    erase.className = "erase";
+    erase.textContent = "×";
+    erase.addEventListener("click", () => this.erase());
+    pad.appendChild(erase);
+  }
+
+  handleCellClick(index) {
+    if (!this.state || this.screen !== "game") return;
+    if (!this.state.setCursor(index)) return;
+    this.sound.play("select");
+    this.updateGameUI();
+  }
+
+  handleDigit(text) {
+    if (!this.state || this.state.status !== "playing") return;
+    const value = symbolsFor(this.state.spec.size).indexOf(String(text).toUpperCase()) + 1;
+    if (!value) return;
+    const cell = this.state.cursor;
+    const isNote = this.state.notesMode;
+    const changed = isNote ? this.state.toggleNote(cell, value) : this.state.setValue(cell, value);
+    if (!changed) {
+      if (this.state.isGiven(cell)) this.showToast(t("givenCell"), true);
+      return;
+    }
+    const element = this.board.getCell(cell);
+    if (!isNote && this.state.settings.errorCheck && value !== this.state.puzzle.solution[cell]) {
+      this.sound.play("error");
+      if (this.settings.animations) flashCell(element, "error");
+      this.showToast(t("wrongValue"), true);
+    } else {
+      this.sound.play("input");
+      if (this.settings.animations) flashCell(element, isNote ? "pop" : "pop");
+    }
+    this.updateGameUI();
+  }
+
+  erase() {
+    if (!this.state?.erase(this.state.cursor)) return;
+    this.sound.play("button");
+    this.updateGameUI();
+  }
+
+  toggleNotes() {
+    if (!this.state) return;
+    const enabled = this.state.setNotesMode(!this.state.notesMode);
+    this.elements["notes-button"].classList.toggle("active", enabled);
+    this.showToast(t(enabled ? "notesOn" : "notesOff"));
+    this.updateGameUI();
+  }
+
+  undo() {
+    if (!this.state?.undo()) return;
+    this.sound.play("button");
+    this.updateGameUI();
+  }
+
+  redo() {
+    if (!this.state?.redo()) return;
+    this.sound.play("button");
+    this.updateGameUI();
+  }
+
+  async showHint() {
+    if (!this.state || this.state.status !== "playing") return;
+    if (!this.state.settings.hintsAllowed) {
+      this.showToast(t("noHints"), true);
+      return;
+    }
+    this.showToast(t("loading"));
+    const response = await this.request("hint", {
+      puzzle: this.state.puzzle,
+      values: this.state.values
+    });
+    const technique = response.ok ? response.technique : null;
+    if (!technique) {
+      this.showToast(t("hintNoLogic"));
+      return;
+    }
+    const explainKey = `explain${technique.id.charAt(0).toUpperCase()}${technique.id.slice(1)}`;
+    const copy = t(explainKey, {
+      value: technique.value ?? technique.candidates?.[0] ?? "",
+      values: (technique.candidates ?? []).map(value => labelFor(this.state.spec.size, value)).join(", ")
+    });
+    const choice = await this.showDialog({
+      title: t(technique.key),
+      copy,
+      dismissible: true,
+      actions: [
+        { label: t("close"), value: "close" },
+        { label: t("solvePuzzle"), value: "solve" },
+        { label: t("revealCell"), value: "reveal" },
+        { label: t("solveStep"), value: "step", primary: true }
+      ]
+    });
+    if (choice === "reveal") this.revealCell();
+    else if (choice === "step") this.applyTechniqueStep(technique);
+    else if (choice === "solve") this.solveWholePuzzle();
+  }
+
+  applyTechniqueStep(technique) {
+    if (!this.state || technique.value == null) return;
+    const cell = technique.cells?.[0];
+    if (cell == null) return;
+    this.state.setCursor(cell);
+    this.state.setValue(cell, technique.value);
+    this.state.hintsUsed += 1;
+    this.sound.play("hint");
+    this.showToast(t("hintValue", { value: labelFor(this.state.spec.size, technique.value) }));
+    if (this.settings.animations) flashCell(this.board.getCell(cell), "hint");
+    this.updateGameUI();
+  }
+
+  revealCell() {
+    const result = this.state?.useHint();
+    if (!result) return;
+    this.sound.play("hint");
+    this.showToast(t("hintAdded"));
+    if (this.settings.animations) flashCell(this.board.getCell(result.cell), "hint");
+    this.updateGameUI();
+  }
+
+  async solveWholePuzzle() {
+    if (!this.state) return;
+    const response = await this.request("solve", { puzzle: this.state.puzzle });
+    if (!response.ok || !response.solution) return;
+    for (const cell of this.state.spec.activeCells) {
+      if (!this.state.puzzle.givens[cell]) {
+        this.state.setCursor(cell);
+        this.state.setValue(cell, response.solution[cell]);
+      }
+    }
+    this.state.hintsUsed += 1;
+    this.updateGameUI();
+  }
+
+  togglePause() {
+    if (!this.state) return;
+    if (this.state.status === "playing") {
+      this.state.pause();
+      this.timer?.pause();
+      this.elements["pause-button"].textContent = t("resume");
+    } else if (this.state.status === "paused") {
+      this.state.resume();
+      this.timer?.resume();
+      this.elements["pause-button"].textContent = t("pause");
+    }
+    this.updateGameUI();
+  }
+
+  startTimer() {
+    this.stopTimer();
+    let last = Date.now();
+    this.timer = setInterval(() => {
+      const now = Date.now();
+      const delta = now - last;
+      last = now;
+      if (!this.state || this.state.status !== "playing") return;
+      this.state.tick(delta);
+      if (this.state.mode === "time-attack") {
+        const limit = TIME_ATTACK_SECONDS[this.state.puzzle.difficulty] ?? 480;
+        if (this.state.elapsedMs >= limit * 1000) {
+          this.state.timeOut();
+          this.finishGame(false);
         }
+      }
+      this.updateTimerDisplay();
+    }, 500);
+  }
 
-        return elements;
+  stopTimer() {
+    if (this.timer) clearInterval(this.timer);
+    this.timer = null;
+  }
+
+  updateTimerDisplay() {
+    if (!this.state) return;
+    let text = formatTime(this.state.elapsedMs);
+    if (this.state.mode === "time-attack") {
+      const limit = TIME_ATTACK_SECONDS[this.state.puzzle.difficulty] ?? 480;
+      text = formatTime(Math.max(0, limit * 1000 - this.state.elapsedMs));
+    }
+    this.elements["timer-display"].textContent = text;
+  }
+
+  updateGameUI() {
+    const state = this.state;
+    if (!state) return;
+    this.elements["game-mode-label"].textContent = t(`mode${state.mode.charAt(0).toUpperCase()}${state.mode.slice(1).replace("-", "")}`) ?? state.mode;
+    this.elements["game-difficulty-label"].textContent = t(state.puzzle.difficulty);
+    this.elements["mistake-count"].textContent = String(state.mistakes);
+    this.elements["hint-count"].textContent = String(state.hintsUsed);
+    this.elements["pause-button"].textContent = state.status === "paused" ? t("resume") : t("pause");
+    this.elements["undo-button"].disabled = !state.canUndo() || state.status !== "playing";
+    this.elements["redo-button"].disabled = !state.canRedo() || state.status !== "playing";
+    this.elements["hint-button"].disabled = !state.settings.hintsAllowed || state.status !== "playing";
+    this.elements["notes-button"].classList.toggle("active", state.notesMode);
+    this.elements.numpad.querySelectorAll("button").forEach(button => {
+      button.disabled = state.status !== "playing";
+    });
+    this.updateTimerDisplay();
+    this.board.update(state);
+  }
+
+  onStateChanged() {
+    this.updateGameUI();
+    this.scheduleSave();
+    if (this.state?.status === "completed") this.finishGame(true);
+  }
+
+  scheduleSave() {
+    if (this.saveTimer) clearTimeout(this.saveTimer);
+    this.saveTimer = setTimeout(() => this.saveNow(), 400);
+  }
+
+  saveNow() {
+    if (!this.state || this.state.status === "completed") return;
+    storage.saveGame(this.state.serialize());
+  }
+
+  continueGame() {
+    const save = storage.getSaves()[0];
+    if (!save) {
+      this.showToast(t("noSave"), true);
+      return;
+    }
+    let restored = null;
+    let spec = null;
+    try {
+      restored = createGameState.fromJSON(save.state);
+      if (restored) spec = buildSpec(restored.puzzle);
+    } catch {
+      restored = null;
+    }
+    if (!restored || !spec) {
+      this.showToast(t("noSave"), true);
+      return;
+    }
+    this.state = restored;
+    this.board.build(restored.puzzle, spec);
+    this.buildNumpad(restored.spec.size);
+    this.state.subscribe(() => this.onStateChanged());
+    this.startTimer();
+    this.showScreen("game");
+    this.updateGameUI();
+    this.showToast(t("resumed"));
+  }
+
+  restart() {
+    if (!this.state) return;
+    this.showDialog({
+      title: t("restart"),
+      copy: t("resetConfirm"),
+      actions: [
+        { label: t("cancel"), value: "cancel" },
+        { label: t("restart"), value: "restart", primary: true }
+      ]
+    }).then(choice => {
+      if (choice !== "restart") return;
+      this.state.reset();
+      this.statistics.recordStart({
+        size: this.state.puzzle.size, variant: this.state.puzzle.variant,
+        difficulty: this.state.puzzle.difficulty, mode: this.state.mode
+      });
+      this.elements["pause-button"].textContent = t("pause");
+      this.updateGameUI();
+      this.saveNow();
+    });
+  }
+
+  goHome() {
+    this.saveNow();
+    this.stopTimer();
+    this.state = null;
+    clearAnimations(document);
+    this.showScreen("home");
+  }
+
+  finishGame(completed) {
+    const state = this.state;
+    if (!state || state.finishHandled) return;
+    state.finishHandled = true;
+    this.stopTimer();
+
+    const context = {
+      size: state.puzzle.size,
+      variant: state.puzzle.variant,
+      difficulty: state.puzzle.difficulty,
+      mode: state.mode,
+      dailyKey: state.mode === "daily" ? dateKey() : undefined
+    };
+    const result = {
+      completed,
+      elapsedMs: state.elapsedMs,
+      mistakes: state.mistakes,
+      hints: state.hintsUsed
+    };
+    const stats = this.statistics.recordCompletion(context, result);
+    const score = this.computeScore(state, completed);
+    const best = stats.byDifficulty?.[state.puzzle.difficulty]?.bestTimeMs ?? null;
+    const isBest = completed && best !== null && Math.abs(best - state.elapsedMs) < 1000;
+
+    if (state.mode === "daily") storage.setDailyRecord(dateKey(), {
+      completed, timeMs: state.elapsedMs, size: state.puzzle.size, variant: state.puzzle.variant
+    });
+    if (completed) storage.deleteSave(state.id);
+
+    if (leleleSDK.isInPlatform()) {
+      leleleSDK.ensureSDK().then(() => leleleSDK.submitScore(score, {
+        name: this.playerName ?? undefined
+      }));
     }
 
-    t(key) {
-        return languageManager.t(key);
+    if (completed && this.settings.animations) {
+      this.sound.play("complete");
+      celebrate(this.elements["sudoku-board"].parentElement);
     }
 
-    // ========================================
-    // Initialization
-    // ========================================
-
-    init() {
-        languageManager.subscribe(language => {
-            this.onLanguageChanged(language);
+    const actions = [
+      { label: t("home"), value: "home" },
+      { label: t("playAgain"), value: "again", primary: true }
+    ];
+    if (leleleSDK.isInPlatform()) {
+      actions.push({ label: t("share"), value: "share" });
+      actions.push({ label: t("nextGame"), value: "next" });
+    }
+    this.showDialog({
+      title: completed ? t("resultCompleted") : t("resultTimeUp"),
+      copy: "",
+      extraHTML: `
+        <div class="result-score">${score}</div>
+        <div class="result-line"><span>${t("resultTime")}</span><strong>${formatTime(state.elapsedMs)}</strong></div>
+        <div class="result-line"><span>${t("resultDifficulty")}</span><strong>${t(state.puzzle.difficulty)}</strong></div>
+        <div class="result-line"><span>${t("resultMistakes")}</span><strong>${state.mistakes}</strong></div>
+        <div class="result-line"><span>${t("resultHints")}</span><strong>${state.hintsUsed}</strong></div>
+        ${best !== null ? `<div class="result-line"><span>${t("resultBest")}</span><strong>${formatTime(best)}</strong></div>` : ""}
+        ${isBest ? `<p class="empty-note">${t("resultNewBest")}</p>` : ""}
+        ${state.mode === "daily" ? `<p class="empty-note">${t("resultDailyDone")}</p>` : ""}
+      `,
+      actions,
+      dismissible: false
+    }).then(choice => {
+      if (choice === "again") {
+        this.startWithPuzzle(state.puzzle, {
+          ...this.setup,
+          mode: state.mode,
+          size: state.puzzle.size,
+          variant: state.puzzle.variant,
+          difficulty: state.puzzle.difficulty
         });
+      } else if (choice === "share") {
+        leleleSDK.shareScore(score, t("share")).then(() => this.goHome());
+      } else if (choice === "next") {
+        leleleSDK.nextGame({ category: "puzzle" });
+        this.goHome();
+      } else {
+        this.goHome();
+      }
+    });
+  }
 
-        const savedLanguage =
-            this.settings.language === "zh" ? "zh" : "en";
+  computeScore(state, completed) {
+    if (!completed) return 0;
+    const base = SCORE_WEIGHTS[state.puzzle.difficulty] ?? 900;
+    const limit = TIME_ATTACK_SECONDS[state.puzzle.difficulty] ?? 480;
+    const bonus = Math.max(0, limit - Math.floor(state.elapsedMs / 1000)) * 4;
+    return Math.max(0, base + bonus - state.mistakes * 40 - state.hintsUsed * 80);
+  }
 
-        languageManager.setLanguage(savedLanguage);
-
-        this.animations = createChessAnimations({
-            boardElement: this.elements.chessboard,
-            gravestoneContainers: {
-                white: this.elements["captured-white"],
-                black: this.elements["captured-black"]
-            },
-            duration: this.settings.animations === false
-                ? 0
-                : 450
-        });
-
-        this.ui = createChessUI({
-            boardSelector: "#chessboard",
-            statusSelector: "#game-status",
-            historySelector: "#move-history",
-            capturedWhiteSelector: "#captured-white",
-            capturedBlackSelector: "#captured-black",
-            animations: this.animations,
-            onPromotion: () => this.choosePromotion(),
-            onMove: move => this.handleLocalMove(move),
-            isInteractive: () => this.canInteract()
-        });
-
-        this.ui.setCoordinates(
-            this.settings.showCoordinates !== false
-        );
-
-        this.bindEvents();
-        this.showWelcomeScreen();
-
-        leleleSDK.ensureSDK();
-
-        leleleSDK.getPlayerName().then(name => {
-            this.playerName = name;
-
-            this.updatePlayerNames();
-        });
-
-        console.info(`Lelele Chess v${APP_VERSION} initialized.`);
+  buildVariantList() {
+    const list = this.elements["variant-list"];
+    if (!list) return;
+    list.innerHTML = "";
+    for (const variant of VARIANTS) {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "variant-card";
+      card.dataset.variant = variant;
+      const glyph = document.createElement("span");
+      glyph.className = "variant-glyph";
+      glyph.textContent = "▦";
+      const name = document.createElement("strong");
+      name.textContent = t(VARIANT_NAMES[variant]);
+      const desc = document.createElement("span");
+      desc.textContent = t(VARIANT_RULE_KEYS[variant]);
+      card.append(glyph, name, desc);
+      card.addEventListener("click", () => {
+        this.setup.variant = variant;
+        this.setup.mode = "variant";
+        this.setup.size = variant === "samurai" ? 9 : this.setup.size;
+        this.openSetup("variant");
+      });
+      list.appendChild(card);
     }
+  }
 
-    bindEvents() {
-        document.querySelectorAll("[data-mode]").forEach(button => {
-            button.addEventListener("click", () => {
-                this.startGame(button.dataset.mode);
-            });
-        });
+  showStats() {
+    this.showScreen("stats");
+    const summary = this.statistics.getSummary();
+    const cards = [
+      ["gamesStarted", summary.gamesStarted],
+      ["gamesCompleted", summary.gamesCompleted],
+      ["winRate", `${summary.winRate}%`],
+      ["bestTime", summary.gamesCompleted ? formatTime(this.bestTimeOverall(summary)) : "—"],
+      ["averageTime", summary.gamesCompleted ? formatTime(summary.averageTimeMs) : "—"],
+      ["totalMistakes", summary.totalMistakes],
+      ["totalHints", summary.totalHints],
+      ["currentStreak", `${summary.currentStreak} ${t("days")}`]
+    ];
+    const html = `<div class="stats-grid">${cards.map(([key, value]) => `
+      <div class="stat-card"><span>${t(key)}</span><strong>${value}</strong></div>
+    `).join("")}</div>`;
+    const sections = [
+      ["bySize", summary.bySize], ["byVariant", summary.byVariant],
+      ["byDifficulty", summary.byDifficulty], ["byMode", summary.byMode]
+    ];
+    this.elements["stats-content"].innerHTML = html + sections.map(([key, map]) => {
+      const rows = Object.entries(map ?? {}).filter(([, value]) => value.completed > 0);
+      if (!rows.length) return "";
+      return `<h3 class="stats-section-title">${t(key)}</h3>
+        <table class="stats-table"><tbody>${rows.map(([name, value]) => `
+          <tr><td>${name}</td><td>${value.completed}</td><td>${value.bestTimeMs !== null ? formatTime(value.bestTimeMs) : "—"}</td></tr>
+        `).join("")}</tbody></table>`;
+    }).join("") + (!summary.gamesCompleted ? `<p class="empty-note">${t("noData")}</p>` : "");
+  }
 
-        this.elements["language-toggle"].addEventListener(
-            "click",
-            () => languageManager.toggleLanguage()
-        );
+  bestTimeOverall(summary) {
+    const values = Object.values(summary.bySize ?? {}).map(entry => entry.bestTimeMs).filter(value => value !== null);
+    return values.length ? Math.min(...values) : 0;
+  }
 
-        this.elements["settings-button"].addEventListener(
-            "click",
-            () => this.openSettings()
-        );
-
-        this.elements["back-button"].addEventListener(
-            "click",
-            () => this.showWelcomeScreen()
-        );
-
-        this.elements["undo-button"].addEventListener(
-            "click",
-            () => this.requestUndo()
-        );
-
-        this.elements["redo-button"].addEventListener(
-            "click",
-            () => this.requestRedo()
-        );
-
-        this.elements["draw-button"].addEventListener(
-            "click",
-            () => this.requestDraw()
-        );
-
-        this.elements["resign-button"].addEventListener(
-            "click",
-            () => this.requestResign()
-        );
-
-        this.elements["restart-button"].addEventListener(
-            "click",
-            () => this.requestRestart()
-        );
-
-        this.elements["difficulty-select"].addEventListener(
-            "change",
-            event => {
-                this.difficulty = event.target.value;
-
-                this.fallbackAI.setDifficulty(this.difficulty);
-
-                this.settings = storage.saveSettings({
-                    difficulty: this.difficulty
-                })
-                    ? storage.getSettings()
-                    : this.settings;
-            }
-        );
-
-        this.elements["create-room-button"].addEventListener(
-            "click",
-            () => this.createOnlineRoom()
-        );
-
-        this.elements["join-room-button"].addEventListener(
-            "click",
-            () => this.joinOnlineRoom()
-        );
-
-        this.elements["make-offer-button"].addEventListener(
-            "click",
-            () => this.generateOffer()
-        );
-
-        this.elements["apply-signal-button"].addEventListener(
-            "click",
-            () => this.applyRemoteSignal()
-        );
-
-        this.elements["copy-signal-button"].addEventListener(
-            "click",
-            () => this.copySignal()
-        );
-
-        this.elements["import-file"].addEventListener(
-            "change",
-            event => this.importFile(event)
-        );
+  async showLeaderboard() {
+    if (!leleleSDK.isInPlatform()) {
+      this.showToast(t("platformOnly"), true);
+      return;
     }
+    const rows = await leleleSDK.getLeaderboard();
+    const copy = rows.length
+      ? rows.map((row, index) => `${index + 1}. ${row.name} — ${row.score}`).join("\n")
+      : t("noLeaderboard");
+    await this.showDialog({ title: t("leaderboard"), copy, actions: [{ label: t("close"), value: "close", primary: true }] });
+  }
 
-    // ========================================
-    // Language
-    // ========================================
+  showRules() {
+    const state = this.state;
+    const variantKey = VARIANT_RULE_KEYS[state?.puzzle.variant ?? "classic"];
+    this.showDialog({
+      title: t("howToPlay"),
+      copy: `${t("howIntro")}\n\n${t(variantKey)}\n\n${t("howKeyboard")}`,
+      actions: [{ label: t("close"), value: "close", primary: true }]
+    });
+  }
 
-    onLanguageChanged(language) {
-        document.documentElement.lang = language;
+  showHowTo() {
+    this.showDialog({
+      title: t("howTitle"),
+      copy: `${t("howIntro")}\n\n${t("howBasics")}\n\n${t("howNotes")}\n\n${t("howKeyboard")}\n\n${t("howDaily")}\n\n${t("howVariants")}`,
+      actions: [{ label: t("close"), value: "close", primary: true }]
+    });
+  }
 
-        this.elements["language-toggle"].textContent =
-            language === "en" ? "中文" : "English";
-
-        document.querySelectorAll("[data-i18n]").forEach(node => {
-            node.textContent = this.t(node.dataset.i18n);
-        });
-
-        this.ui?.setLanguage(language);
-
-        storage.saveSettings({ language });
+  async openSettings() {
+    const s = this.settings;
+    const rows = [
+      ["sound", s.sound], ["soundEffects", s.soundEffects], ["animations", s.animations],
+      ["autoNotes", s.autoNotes], ["errorCheck", s.errorCheck],
+      ["hintsAllowed", s.hintsAllowed], ["timer", s.timer]
+    ];
+    const extraHTML = `<div class="dialog-list">${rows.map(([key, value], index) => `
+      <label class="dialog-row"><span>${t(key)}</span><input type="checkbox" data-setting="${key}" data-index="${index}" ${value ? "checked" : ""}></label>
+    `).join("")}</div>`;
+    const choice = await this.showDialog({
+      title: t("settingsTitle"),
+      copy: "",
+      extraHTML,
+      actions: [
+        { label: t("cancel"), value: "cancel" },
+        { label: t("clearData"), value: "clear" },
+        { label: t("importData"), value: "import" },
+        { label: t("exportData"), value: "export" },
+        { label: t("confirm"), value: "save", primary: true }
+      ]
+    });
+    if (choice === "cancel" || choice === null) return;
+    if (choice === "export") {
+      const blob = new Blob([JSON.stringify(storage.exportData(), null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `lelele-sudoku-${dateKey()}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      this.showToast(t("dataExported"));
+      return;
     }
-
-    // ========================================
-    // Screen and game lifecycle
-    // ========================================
-
-    showWelcomeScreen() {
-        this.cancelAI();
-        this.teardownOnline();
-
-        this.currentMode = null;
-        this.game = null;
-        this.endHandled = false;
-
-        this.elements["welcome-panel"].hidden = false;
-        this.elements["game-screen"].hidden = true;
-        this.elements["online-panel"].hidden = true;
-        this.elements["ai-panel"].hidden = true;
+    if (choice === "import") {
+      this.elements["import-file"].click();
+      return;
     }
-
-    startGame(mode) {
-        if (!["local", "computer", "online"].includes(mode)) return;
-
-        this.cancelAI();
-
-        if (mode !== "online") this.teardownOnline();
-
-        this.currentMode = mode;
-        this.endHandled = false;
-
-        this.elements["welcome-panel"].hidden = true;
-        this.elements["game-screen"].hidden = false;
-        this.elements["ai-panel"].hidden = mode !== "computer";
-        this.elements["online-panel"].hidden = mode !== "online";
-
-        this.newGame(mode);
-
-        if (mode === "online") this.setupOnline();
+    if (choice === "clear") {
+      const confirm = await this.showDialog({
+        title: t("clearData"), copy: t("clearDataConfirm"),
+        actions: [{ label: t("cancel"), value: "cancel" }, { label: t("confirm"), value: "confirm", primary: true }]
+      });
+      if (confirm === "confirm") { storage.clearAll(); window.location.reload(); }
+      return;
     }
-
-    newGame(mode = this.currentMode ?? "local") {
-        this.cancelAI();
-        this.animations.cancelAll();
-
-        this.game = createGame({ mode });
-        this.endHandled = false;
-
-        this.ui.setOrientation(
-            mode === "online" && this.online
-                ? this.online.localColor
-                : COLORS.WHITE
-        );
-
-        this.ui.connectGame(this.game);
-        this.ui.syncCaptured();
-        this.ui.clearSelection(false);
-
-        this.elements["difficulty-select"].value = this.difficulty;
-
-        this.updatePlayerNames();
-        this.updateControls();
-
-        if (mode === "computer") {
-            this.fallbackAI.setDifficulty(this.difficulty);
-        }
+    this.elements["dialog-extra"].querySelectorAll("[data-setting]").forEach(input => {
+      this.settings[input.dataset.setting] = input.checked;
+    });
+    storage.saveSettings(this.settings);
+    this.sound.setEnabled(this.settings.sound);
+    if (this.state) {
+      Object.assign(this.state.settings, {
+        errorCheck: this.settings.errorCheck,
+        hintsAllowed: this.settings.hintsAllowed,
+        timer: this.settings.timer,
+        autoNotes: this.settings.autoNotes
+      });
+      this.updateGameUI();
     }
+  }
 
-    canInteract() {
-        if (!this.game || this.game.gameOver) return false;
+  importData(event) {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      try {
+        const ok = storage.importData(JSON.parse(String(reader.result)));
+        this.showToast(t(ok ? "dataImported" : "dataImportFailed"), !ok);
+      } catch {
+        this.showToast(t("dataImportFailed"), true);
+      }
+    };
+    reader.readAsText(file);
+  }
 
-        if (this.currentMode === "local") return true;
+  showDialog({ title, copy = "", extraHTML = "", actions = [], dismissible = true }) {
+    const el = this.elements;
+    el["dialog-title"].textContent = title ?? "";
+    el["dialog-copy"].textContent = copy ?? "";
+    el["dialog-extra"].innerHTML = extraHTML ?? "";
+    el["dialog-actions"].innerHTML = "";
+    this.dialogDismissible = dismissible;
+    el["dialog-backdrop"].hidden = false;
 
-        if (this.currentMode === "computer") {
-            return this.game.state.turn === COLORS.WHITE &&
-                !this.aiBusy;
-        }
+    return new Promise(resolve => {
+      this.dialogResolve = resolve;
+      for (const action of actions) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = action.primary ? "button-primary" : "button-secondary";
+        button.textContent = action.label;
+        button.addEventListener("click", () => this.closeDialog(action.value));
+        el["dialog-actions"].appendChild(button);
+      }
+    });
+  }
 
-        if (this.currentMode === "online") {
-            return Boolean(
-                this.online?.connected &&
-                this.online.localColor === this.game.state.turn
-            );
-        }
-
-        return false;
+  closeDialog(value) {
+    if (this.dialogResolve) {
+      const resolve = this.dialogResolve;
+      this.dialogResolve = null;
+      this.elements["dialog-backdrop"].hidden = true;
+      resolve(value);
     }
+  }
 
-    updateControls() {
-        const connected =
-            this.currentMode !== "online" ||
-            Boolean(this.online?.connected);
+  showToast(message, isError = false) {
+    const toast = this.elements.toast;
+    toast.textContent = message;
+    toast.classList.toggle("error", Boolean(isError));
+    toast.hidden = false;
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    this.toastTimer = setTimeout(() => { toast.hidden = true; }, 2800);
+  }
 
-        const active =
-            Boolean(this.game) &&
-            !this.game.gameOver &&
-            connected;
-
-        for (const id of [
-            "undo-button", "redo-button", "draw-button",
-            "resign-button"
-        ]) {
-            this.elements[id].disabled = !active;
-        }
-
-        this.elements["undo-button"].disabled =
-            !active || !this.game?.canUndo();
-
-        this.elements["redo-button"].disabled =
-            !active ||
-            this.currentMode === "online" ||
-            !this.game?.canRedo();
+  handleKeyboard(event) {
+    if (!this.state || this.screen !== "game" || !this.elements["dialog-backdrop"].hidden) return;
+    if (["INPUT", "SELECT", "TEXTAREA"].includes(event.target?.tagName)) return;
+    const key = event.key;
+    if (/^[0-9a-gA-G]$/.test(key)) {
+      event.preventDefault();
+      this.handleDigit(key);
+      return;
     }
-
-    updatePlayerNames() {
-        const name = this.playerName ?? this.t("playerLabel");
-
-        if (this.currentMode === "online" && this.online) {
-            const localIsWhite =
-                this.online.localColor === COLORS.WHITE;
-
-            const opponentName =
-                this.online.opponent?.name ??
-                this.t("opponentDisconnected");
-
-            this.elements["white-name"].textContent =
-                localIsWhite ? name : opponentName;
-
-            this.elements["black-name"].textContent =
-                localIsWhite ? opponentName : name;
-
-            return;
-        }
-
-        if (this.currentMode === "computer") {
-            this.elements["white-name"].textContent = name;
-            this.elements["black-name"].textContent =
-                this.t("computerOpponent");
-
-            return;
-        }
-
-        this.elements["white-name"].textContent =
-            this.t("whitePlayer");
-        this.elements["black-name"].textContent =
-            this.t("blackPlayer");
+    const moves = {
+      ArrowLeft: [0, -1], ArrowRight: [0, 1], ArrowUp: [-1, 0], ArrowDown: [1, 0],
+      w: [-1, 0], s: [1, 0], a: [0, -1], d: [0, 1]
+    };
+    const move = moves[key] ?? moves[key.toLowerCase()];
+    if (move) {
+      event.preventDefault();
+      const size = this.state.spec.size;
+      const row = Math.floor(this.state.cursor / size) + move[0];
+      const col = (this.state.cursor % size) + move[1];
+      if (row >= 0 && row < size && col >= 0 && col < size) {
+        const cell = row * size + col;
+        if (this.state.setCursor(cell)) this.board.focusCell(cell);
+      }
+      return;
     }
-
-    // ========================================
-    // Move handling
-    // ========================================
-
-    handleLocalMove(move) {
-        this.updateControls();
-
-        if (this.currentMode === "online") {
-            this.online?.sendMove({
-                from: move.from,
-                to: move.to,
-                promotion: move.promotion,
-                color: this.online.localColor
-            });
-        }
-
-        this.checkGameEnd();
-
-        if (
-            this.currentMode === "computer" &&
-            !this.game.gameOver &&
-            this.game.state.turn === COLORS.BLACK
-        ) {
-            this.requestAI();
-        }
-    }
-
-    async choosePromotion() {
-        const symbols = {
-            [PIECES.QUEEN]: "♕",
-            [PIECES.ROOK]: "♖",
-            [PIECES.BISHOP]: "♗",
-            [PIECES.KNIGHT]: "♘"
-        };
-
-        const choice = await this.showDialog({
-            title: this.t("promotionTitle"),
-            copy: "",
-            actions: [],
-            extra: container => {
-                const grid = document.createElement("div");
-                grid.className = "promotion-options";
-
-                for (const type of PROMOTION_OPTIONS) {
-                    const button = document.createElement("button");
-                    button.type = "button";
-                    button.dataset.promotion = type;
-                    button.innerHTML =
-                        `${symbols[type]}<span>${this.t(`promote${type[0].toUpperCase()}${type.slice(1)}`)}</span>`;
-
-                    grid.appendChild(button);
-                }
-
-                container.appendChild(grid);
-            }
-        });
-
-        return choice;
-    }
-
-    checkGameEnd() {
-        const snapshot = this.game.getSnapshot();
-
-        if (!snapshot.gameOver || this.endHandled) return;
-
-        this.endHandled = true;
-
-        this.cancelAI();
-
-        this.updateControls();
-
-        const result = snapshot.result;
-        const score =
-            result.winner === null
-                ? 50
-                : result.winner === this.humanColor()
-                    ? 100
-                    : 0;
-
-        if (this.currentMode !== "local") {
-            const outcome =
-                result.winner === null
-                    ? "draw"
-                    : result.winner === this.humanColor()
-                        ? "win"
-                        : "loss";
-
-            storage.updateStatistics(
-                outcome,
-                snapshot.moveCount
-            );
-        }
-
-        storage.saveMatch({
-            mode: this.currentMode,
-            result,
-            fen: snapshot.fen,
-            moves: this.game.getMoveHistory().map(
-                move => move.notation
-            ),
-            moveCount: snapshot.moveCount,
-            duration: this.game.getDuration()
-        });
-
-        storage.saveGame(this.game.exportGame());
-
-        this.lastScore = score;
-
-        if (this.currentMode !== "local") {
-            leleleSDK.ensureSDK().then(() => {
-                leleleSDK.submitScore(score, {
-                    name: this.playerName ?? undefined
-                });
-            });
-        }
-
-        this.showGameOverDialog(result);
-    }
-
-    humanColor() {
-        if (this.currentMode === "online") {
-            return this.online?.localColor ?? COLORS.WHITE;
-        }
-
-        return COLORS.WHITE;
-    }
-
-    showGameOverDialog(result) {
-        const winner = result.winner
-            ? this.t(result.winner)
-            : this.t("drawGame");
-
-        const title = result.status === "resignation"
-            ? `${winner} — ${this.t("gameOver")}`
-            : winner;
-
-        this.showDialog({
-            title,
-            copy: this.t("gameOver"),
-            actions: [
-                {
-                    id: "restart",
-                    label: this.t("restart"),
-                    primary: true
-                },
-                {
-                    id: "share",
-                    label: this.t("shareScore")
-                },
-                {
-                    id: "rate",
-                    label: this.t("rateGame")
-                },
-                {
-                    id: "leaderboard",
-                    label: this.t("viewLeaderboard")
-                },
-                {
-                    id: "next",
-                    label: this.t("nextGame")
-                },
-                {
-                    id: "close",
-                    label: this.t("close")
-                }
-            ]
-        }).then(async action => {
-            if (action === "restart") this.requestRestart();
-
-            if (action === "share") {
-                if (!leleleSDK.isInPlatform()) {
-                    this.toast(this.t("platformOnly"));
-
-                    return;
-                }
-
-                const url = await leleleSDK.shareScore(
-                    this.lastScore ?? 0
-                );
-
-                this.toast(
-                    url ?? this.t("somethingWentWrong")
-                );
-            }
-
-            if (action === "rate") this.openRatingDialog();
-
-            if (action === "leaderboard") {
-                this.openLeaderboardDialog();
-            }
-
-            if (action === "next") leleleSDK.nextGame();
-        });
-    }
-
-    async openRatingDialog() {
-        const rating = await this.showDialog({
-            title: this.t("rateGame"),
-            copy: "",
-            actions: [1, 2, 3, 4, 5].map(value => ({
-                id: `rating-${value}`,
-                label: `${value} ★`
-            }))
-        });
-
-        if (!rating?.startsWith("rating-")) return;
-
-        if (!leleleSDK.isInPlatform()) {
-            this.toast(this.t("platformOnly"));
-
-            return;
-        }
-
-        const value = Number(rating.split("-")[1]);
-
-        leleleSDK.ensureSDK().then(() => {
-            const ok = leleleSDK.submitRating(value);
-
-            this.toast(
-                ok ? this.t("gameSaved") : this.t("somethingWentWrong")
-            );
-        });
-    }
-
-    async openLeaderboardDialog() {
-        const rows = await leleleSDK.getLeaderboard();
-
-        const text = rows.length
-            ? rows
-                .slice(0, 10)
-                .map(
-                    (row, index) =>
-                        `${index + 1}. ${row.name ?? "?"} — ${row.score ?? 0}`
-                )
-                .join("\n")
-            : this.t("noLeaderboard");
-
-        await this.showDialog({
-            title: this.t("viewLeaderboard"),
-            copy: text,
-            actions: [
-                { id: "close", label: this.t("close"), primary: true }
-            ]
-        });
-    }
-
-    // ========================================
-    // AI worker
-    // ========================================
-
-    ensureAIWorker() {
-        if (this.aiWorker) return this.aiWorker;
-
-        if (
-            typeof Worker === "undefined" ||
-            typeof import.meta?.url !== "string"
-        ) {
-            return null;
-        }
-
-        try {
-            this.aiWorker = new Worker(
-                new URL("./ai-worker.js", import.meta.url),
-                { type: "module" }
-            );
-
-            this.aiWorker.addEventListener(
-                "message",
-                event => this.handleWorkerMessage(event.data)
-            );
-
-            this.aiWorker.addEventListener("error", error => {
-                console.warn("AI worker error:", error);
-
-                this.aiWorker?.terminate();
-                this.aiWorker = null;
-
-                if (
-                    this.game &&
-                    !this.game.gameOver &&
-                    this.currentMode === "computer" &&
-                    this.game.state.turn === COLORS.BLACK
-                ) {
-                    const requestId = this.aiRequestId;
-                    const state = this.game.getSnapshot().state;
-
-                    this.fallbackAI.setDifficulty(this.difficulty);
-
-                    setTimeout(() => {
-                        this.applyAIMove(
-                            requestId,
-                            this.fallbackAI.getMove(state)
-                        );
-                    }, 0);
-
-                    return;
-                }
-
-                this.aiBusy = false;
-            });
-        } catch (error) {
-            console.warn("AI worker unavailable:", error);
-            this.aiWorker = null;
-        }
-
-        return this.aiWorker;
-    }
-
-    requestAI() {
-        if (
-            !this.game ||
-            this.game.gameOver ||
-            this.game.state.turn !== COLORS.BLACK ||
-            this.aiBusy
-        ) {
-            return;
-        }
-
-        this.aiBusy = true;
-        this.aiRequestId += 1;
-
-        const requestId = this.aiRequestId;
-
-        this.updateControls();
-        this.toast(this.t("aiThinking"));
-
-        const state = this.game.getSnapshot().state;
-
-        const worker = this.ensureAIWorker();
-
-        if (worker) {
-            worker.postMessage({
-                type: "calculate",
-                requestId,
-                state,
-                difficulty: this.difficulty
-            });
-
-            return;
-        }
-
-        this.fallbackAI.setDifficulty(this.difficulty);
-
-        setTimeout(() => {
-            if (
-                requestId !== this.aiRequestId ||
-                !this.game ||
-                this.game.gameOver
-            ) {
-                return;
-            }
-
-            const move = this.fallbackAI.getMove(state);
-
-            this.applyAIMove(requestId, move);
-        }, 0);
-    }
-
-    handleWorkerMessage(message) {
-        if (!message || typeof message.type !== "string") return;
-
-        if (message.type === "result") {
-            this.applyAIMove(
-                message.requestId,
-                message.move
-            );
-
-            return;
-        }
-
-        if (message.type === "error") {
-            console.warn("AI worker request failed:", message.error);
-
-            if (message.requestId !== this.aiRequestId) return;
-
-            this.aiBusy = false;
-
-            this.toast(
-                message.error ?? this.t("somethingWentWrong")
-            );
-        }
-    }
-
-    applyAIMove(requestId, move) {
-        if (
-            requestId !== this.aiRequestId ||
-            !this.aiBusy ||
-            !this.game ||
-            this.game.gameOver ||
-            this.game.state.turn !== COLORS.BLACK
-        ) {
-            return;
-        }
-
-        this.aiBusy = false;
-
-        if (
-            !move ||
-            !Number.isInteger(move.from) ||
-            !Number.isInteger(move.to)
-        ) {
-            this.toast(this.t("somethingWentWrong"));
-
-            return;
-        }
-
-        const result = this.ui.applyIndices(
-            move.from,
-            move.to,
-            move.promotion ?? PIECES.QUEEN
-        );
-
-        if (!result?.success) {
-            this.toast(this.t("invalidMove"));
-        }
-    }
-
-    cancelAI() {
-        this.aiRequestId += 1;
-        this.aiBusy = false;
-
-        if (this.aiWorker) {
-            this.aiWorker.postMessage({
-                type: "cancel",
-                requestId: this.aiRequestId
-            });
-        }
-    }
-
-    // ========================================
-    // Online game
-    // ========================================
-
-    setupOnline() {
-        this.signaling = createManualSignaling();
-
-        this.network = createChessNetwork({
-            playerId: this.onlinePlayerId()
-        });
-
-        this.network.setSignalingAdapter(this.signaling);
-
-        this.online = createOnlineGame({
-            network: this.network,
-            playerName: this.playerName ?? this.t("playerLabel"),
-            getState: () => this.getOnlineMoves()
-        });
-
-        this.bindOnlineEvents();
-
-        this.elements["signal-local"].value = "";
-        this.elements["signal-remote"].value = "";
-        this.elements["online-room-code"].hidden = true;
-
-        this.updateConnectionUI(false);
-        this.updatePlayerNames();
-    }
-
-    onlinePlayerId() {
-        if (!this._onlinePlayerId) {
-            this._onlinePlayerId =
-                `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
-        }
-
-        return this._onlinePlayerId;
-    }
-
-    getOnlineMoves() {
-        if (!this.game) return [];
-
-        return this.game.state.moveHistory.map(move => ({
-            from: squareToNotation(move.from),
-            to: squareToNotation(move.to),
-            promotion: move.promotion ?? PIECES.QUEEN
-        }));
-    }
-
-    bindOnlineEvents() {
-        this.online.on(
-            ONLINE_EVENTS.ROOM_CREATED,
-            ({ roomCode }) => {
-                this.elements["online-room-code"].hidden = false;
-                this.elements["online-room-code"].textContent =
-                    `Room ${roomCode}`;
-
-                this.ui.setOrientation(this.online.localColor);
-
-                this.toast(this.t("roomReady"));
-            }
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.ROOM_JOINED,
-            ({ roomCode }) => {
-                this.elements["online-room-code"].hidden = false;
-                this.elements["online-room-code"].textContent =
-                    `Room ${roomCode}`;
-
-                this.ui.setOrientation(this.online.localColor);
-
-                this.toast(this.t("waitingForConnection"));
-            }
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.PLAYER_JOINED,
-            () => this.updatePlayerNames()
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.PLAYER_LEFT,
-            () => {
-                this.updatePlayerNames();
-                this.toast(this.t("opponentDisconnected"));
-            }
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.CONNECTION_CHANGE,
-            status => {
-                this.updateConnectionUI(status.connected);
-            }
-        );
-
-        this.online.on(ONLINE_EVENTS.MOVE, message => {
-            this.handleRemoteMove(message);
-        });
-
-        this.online.on(ONLINE_EVENTS.STATE_SYNC, ({ moves }) => {
-            if (!this.online.isHost) {
-                const result = this.game.loadFromMoves(moves);
-
-                if (result.success) {
-                    this.ui.syncCaptured();
-                    this.ui.render();
-                    this.updateControls();
-                    this.checkGameEnd();
-                } else {
-                    this.toast(this.t("invalidMove"));
-                }
-            }
-        });
-
-        this.online.on(
-            ONLINE_EVENTS.UNDO_REQUEST,
-            message => this.handleIncomingRequest(
-                message,
-                "undo"
-            )
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.DRAW_REQUEST,
-            message => this.handleIncomingRequest(
-                message,
-                "draw"
-            )
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.UNDO_RESPONSE,
-            ({ accepted }) => {
-                if (!accepted) {
-                    this.toast(this.t("requestDeclined"));
-
-                    return;
-                }
-
-                const result = this.game.undo();
-
-                if (result.success) {
-                    this.ui.syncCaptured();
-                    this.updateControls();
-                    this.toast(this.t("undoAccepted"));
-                }
-            }
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.DRAW_RESPONSE,
-            ({ accepted }) => {
-                if (!accepted) {
-                    this.toast(this.t("requestDeclined"));
-
-                    return;
-                }
-
-                this.game.agreeDraw();
-                this.toast(this.t("drawAccepted"));
-                this.checkGameEnd();
-            }
-        );
-
-        this.online.on(ONLINE_EVENTS.RESIGN, message => {
-            const color =
-                message.color ??
-                (this.online.localColor === COLORS.WHITE
-                    ? COLORS.BLACK
-                    : COLORS.WHITE);
-
-            this.game.resign(color);
-            this.toast(this.t("gameOver"));
-            this.checkGameEnd();
-        });
-
-        this.online.on(ONLINE_EVENTS.GAME_RESTART, () => {
-            this.newGame("online");
-
-            this.toast(this.t("restartRequested"));
-
-            if (this.online.isHost) {
-                this.online.sendState(
-                    this.getOnlineMoves()
-                );
-            }
-        });
-
-        this.online.on(
-            ONLINE_EVENTS.REQUEST_TIMEOUT,
-            () => this.toast(this.t("requestTimedOut"))
-        );
-
-        this.online.on(
-            ONLINE_EVENTS.ERROR,
-            error => this.toast(
-                error?.message ??
-                this.t("somethingWentWrong")
-            )
-        );
-    }
-
-    handleRemoteMove(message) {
-        if (
-            !this.game ||
-            this.game.gameOver ||
-            !message.move ||
-            typeof message.move.from !== "string" ||
-            typeof message.move.to !== "string"
-        ) {
-            this.toast(this.t("invalidMove"));
-
-            return;
-        }
-
-        const expected =
-            this.online.localColor === COLORS.WHITE
-                ? COLORS.BLACK
-                : COLORS.WHITE;
-
-        if (message.color !== expected) return;
-
-        const from = notationToSquare(message.move.from);
-        const to = notationToSquare(message.move.to);
-
-        if (from < 0 || to < 0) {
-            this.toast(this.t("invalidMove"));
-
-            return;
-        }
-
-        this.ui.suppressMoveCallback = true;
-
-        try {
-            const result = this.ui.applyIndices(
-                from,
-                to,
-                message.move.promotion ?? PIECES.QUEEN
-            );
-
-            if (!result?.success) {
-                this.toast(this.t("invalidMove"));
-            } else {
-                this.updateControls();
-                this.checkGameEnd();
-            }
-        } finally {
-            this.ui.suppressMoveCallback = false;
-        }
-    }
-
-    async handleIncomingRequest(message, kind) {
-        const accepted = await this.showDialog({
-            title:
-                kind === "undo"
-                    ? this.t("undo")
-                    : this.t("draw"),
-            copy:
-                kind === "undo"
-                    ? this.t("undoRequest")
-                    : this.t("drawRequest"),
-            actions: [
-                {
-                    id: "accept",
-                    label: this.t("accept"),
-                    primary: true
-                },
-                {
-                    id: "decline",
-                    label: this.t("decline")
-                }
-            ]
-        });
-
-        if (!this.online) return;
-
-        const acceptedRequest = accepted === "accept";
-
-        if (kind === "undo") {
-            this.online.respondUndo(
-                message.requestId,
-                acceptedRequest
-            );
-
-            // WebRTC does not echo the response to the sender,
-            // so both sides must apply the accepted undo.
-            if (acceptedRequest && this.game.undo().success) {
-                this.ui.syncCaptured();
-                this.updateControls();
-                this.toast(this.t("undoAccepted"));
-            }
-        } else {
-            this.online.respondDraw(
-                message.requestId,
-                acceptedRequest
-            );
-
-            if (acceptedRequest) {
-                this.game.agreeDraw();
-                this.toast(this.t("drawAccepted"));
-                this.checkGameEnd();
-            }
-        }
-    }
-
-    updateConnectionUI(connected) {
-        const pill = this.elements["connection-status"];
-
-        pill.dataset.status =
-            connected ? "connected" : "disconnected";
-
-        this.elements["connection-label"].textContent =
-            this.t(connected ? "connected" : "disconnected");
-
-        this.elements["create-room-button"].disabled = connected;
-        this.elements["join-room-button"].disabled = connected;
-
-        this.updateControls();
-    }
-
-    async createOnlineRoom() {
-        if (!this.online) return;
-
-        const room = await this.online.createRoom();
-
-        if (!room.success) {
-            this.toast(room.error ?? this.t("somethingWentWrong"));
-
-            return;
-        }
-
-        await this.generateOffer();
-    }
-
-    async joinOnlineRoom() {
-        if (!this.online) return;
-
-        const code = this.elements["room-input"].value.trim();
-
-        if (!/^\d{4}$/.test(code)) {
-            this.toast(this.t("roomCodeInvalid"));
-
-            return;
-        }
-
-        const result = await this.online.joinRoom(code);
-
-        if (!result.success) {
-            this.toast(result.error ?? this.t("somethingWentWrong"));
-
-            return;
-        }
-
-        this.elements["signal-local"].value = "";
-        this.toast(this.t("waitingForConnection"));
-    }
-
-    async generateOffer() {
-        if (!this.network) return;
-
-        try {
-            await this.network.createOffer();
-
-            this.elements["signal-local"].value =
-                this.signaling.getSignalText();
-        } catch (error) {
-            this.toast(error.message);
-        }
-    }
-
-    async applyRemoteSignal() {
-        if (!this.signaling) return;
-
-        try {
-            this.signaling.setSignalFromText(
-                this.elements["signal-remote"].value
-            );
-
-            this.toast(this.t("signalApplied"));
-
-            // Answer generation waits for ICE gathering (up to
-            // 4s), so poll until the local signal is ready.
-            const previous = this.signaling.getSignalText();
-
-            for (let attempt = 0; attempt < 60; attempt++) {
-                await new Promise(resolve =>
-                    setTimeout(resolve, 100)
-                );
-
-                const text = this.signaling.getSignalText();
-
-                if (text && text !== previous) {
-                    this.elements["signal-local"].value = text;
-
-                    break;
-                }
-            }
-        } catch (error) {
-            this.toast(error.message);
-        }
-    }
-
-    async copySignal() {
-        const text = this.elements["signal-local"].value;
-
-        if (!text) return;
-
-        try {
-            await navigator.clipboard.writeText(text);
-            this.toast(this.t("signalCopied"));
-        } catch {
-            this.elements["signal-local"].select();
-            this.toast(this.t("manualCopy"));
-        }
-    }
-
-    teardownOnline() {
-        this.online?.destroy();
-        this.network?.destroy();
-
-        this.online = null;
-        this.network = null;
-        this.signaling = null;
-    }
-
-    // ========================================
-    // Controls and dialogs
-    // ========================================
-
-    async requestUndo() {
-        if (this.currentMode === "online") {
-            const result = await this.online.requestUndo();
-
-            if (!result.success) this.toast(result.error);
-
-            return;
-        }
-
-        const result = this.game.undo();
-
-        if (result.success) {
-            this.ui.syncCaptured();
-            this.updateControls();
-        }
-    }
-
-    requestRedo() {
-        const result = this.game.redo();
-
-        if (result.success) {
-            this.ui.syncCaptured();
-            this.updateControls();
-        }
-    }
-
-    async requestDraw() {
-        if (this.currentMode === "online") {
-            const result = await this.online.requestDraw();
-
-            if (!result.success) this.toast(result.error);
-
-            return;
-        }
-
-        const accepted = await this.showDialog({
-            title: this.t("draw"),
-            copy: this.t("confirmDraw"),
-            actions: [
-                {
-                    id: "accept",
-                    label: this.t("accept"),
-                    primary: true
-                },
-                {
-                    id: "decline",
-                    label: this.t("decline")
-                }
-            ]
-        });
-
-        if (accepted === "accept") {
-            this.game.agreeDraw();
-            this.checkGameEnd();
-        }
-    }
-
-    async requestResign() {
-        const accepted = await this.showDialog({
-            title: this.t("resign"),
-            copy: this.t("confirmResign"),
-            actions: [
-                {
-                    id: "accept",
-                    label: this.t("accept"),
-                    primary: true
-                },
-                {
-                    id: "decline",
-                    label: this.t("decline")
-                }
-            ]
-        });
-
-        if (accepted !== "accept") return;
-
-        const color =
-            this.currentMode === "online"
-                ? this.online.localColor
-                : COLORS.WHITE;
-
-        this.game.resign(color);
-
-        if (this.currentMode === "online") {
-            this.online.resign();
-        }
-
-        this.checkGameEnd();
-    }
-
-    requestRestart() {
-        if (this.currentMode === "online") {
-            this.online.requestRestart();
-            this.newGame("online");
-
-            return;
-        }
-
-        this.newGame(this.currentMode);
-    }
-
-    showDialog({ title, copy, actions = [], extra = null }) {
-        const backdrop = this.elements["dialog-backdrop"];
-
-        if (!backdrop.hidden) return Promise.resolve(null);
-
-        backdrop.hidden = false;
-
-        this.elements["dialog-title"].textContent = title ?? "";
-        this.elements["dialog-copy"].textContent = copy ?? "";
-
-        const extraContainer = this.elements["dialog-extra"];
-        const actionsContainer = this.elements["dialog-actions"];
-
-        extraContainer.innerHTML = "";
-        actionsContainer.innerHTML = "";
-
-        extra?.(extraContainer);
-
-        return new Promise(resolve => {
-            const onExtraClick = event => {
-                const target = event.target.closest(
-                    "[data-promotion]"
-                );
-
-                if (!target) return;
-
-                cleanup();
-                resolve(target.dataset.promotion);
-            };
-
-            const cleanup = () => {
-                backdrop.hidden = true;
-
-                actionsContainer.innerHTML = "";
-                extraContainer.removeEventListener(
-                    "click",
-                    onExtraClick
-                );
-
-                backdrop.onclick = null;
-            };
-
-            for (const action of actions) {
-                const button = document.createElement("button");
-
-                button.type = "button";
-                button.textContent = action.label;
-                button.className = action.primary
-                    ? "button-primary"
-                    : "button-secondary";
-
-                if (action.dataset) {
-                    button.dataset.dialogAction = action.dataset;
-                }
-
-                button.addEventListener("click", () => {
-                    cleanup();
-                    resolve(action.id);
-                });
-
-                actionsContainer.appendChild(button);
-            }
-
-            extraContainer.addEventListener(
-                "click",
-                onExtraClick
-            );
-
-            backdrop.onclick = event => {
-                if (event.target !== backdrop) return;
-
-                cleanup();
-                resolve(null);
-            };
-        });
-    }
-
-    toast(message) {
-        if (!message) return;
-
-        const toast = this.elements.toast;
-
-        toast.textContent = message;
-        toast.hidden = false;
-        toast.classList.add("is-entering");
-
-        clearTimeout(this.toastTimer);
-
-        this.toastTimer = setTimeout(() => {
-            toast.hidden = true;
-            toast.classList.remove("is-entering");
-        }, 3200);
-    }
-
-    // ========================================
-    // Settings and persistence
-    // ========================================
-
-    async openSettings() {
-        const settings = storage.getSettings();
-
-        const choice = await this.showDialog({
-            title: this.t("settings"),
-            copy: "",
-            extra: container => {
-                const list = document.createElement("div");
-                list.className = "settings-list";
-
-                const rows = [
-                    ["animations", settings.animations !== false],
-                    ["showCoordinates", settings.showCoordinates !== false]
-                ];
-
-                for (const [key, checked] of rows) {
-                    const row = document.createElement("label");
-                    row.className = "settings-row";
-
-                    const label = document.createElement("span");
-                    label.textContent = this.t(key);
-
-                    const input = document.createElement("input");
-                    input.type = "checkbox";
-                    input.checked = checked;
-                    input.dataset.setting = key;
-
-                    row.append(label, input);
-                    list.appendChild(row);
-                }
-
-                container.appendChild(list);
-            },
-            actions: [
-                {
-                    id: "save",
-                    label: this.t("save"),
-                    primary: true
-                },
-                { id: "load", label: this.t("gameLoaded") },
-                { id: "export", label: "Export" },
-                { id: "import", label: "Import" },
-                { id: "clear", label: this.t("clearData") }
-            ]
-        });
-
-        if (!choice) return;
-
-        if (choice === "save") {
-            const toggles = this.elements["dialog-backdrop"]
-                .querySelectorAll("[data-setting]");
-
-            const updates = { difficulty: this.difficulty };
-
-            for (const toggle of toggles) {
-                updates[toggle.dataset.setting] = toggle.checked;
-            }
-
-            storage.saveSettings(updates);
-
-            this.settings = storage.getSettings();
-
-            this.animations.duration =
-                this.settings.animations === false
-                    ? 0
-                    : 450;
-
-            this.ui.setCoordinates(
-                this.settings.showCoordinates !== false
-            );
-
-            this.toast(this.t("save"));
-
-            return;
-        }
-
-        if (choice === "load") {
-            this.loadSavedGame();
-
-            return;
-        }
-
-        if (choice === "export") {
-            this.exportData();
-
-            return;
-        }
-
-        if (choice === "import") {
-            this.elements["import-file"].click();
-
-            return;
-        }
-
-        const confirmed = await this.showDialog({
-            title: this.t("clearDataConfirm"),
-            copy: "",
-            actions: [
-                {
-                    id: "confirm",
-                    label: this.t("confirm"),
-                    primary: true
-                },
-                { id: "cancel", label: this.t("cancel") }
-            ]
-        });
-
-        if (confirmed === "confirm") {
-            storage.clearAll();
-            this.toast(this.t("save"));
-        }
-    }
-
-    loadSavedGame() {
-        const saved = storage.loadGame();
-
-        if (!saved?.fen || !saved.moves) {
-            this.toast(this.t("noSavedGame"));
-
-            return;
-        }
-
-        const result = this.game.loadFromMoves(saved.moves);
-
-        if (!result.success) {
-            this.toast(this.t("noSavedGame"));
-
-            return;
-        }
-
-        this.ui.syncCaptured();
-        this.updateControls();
-        this.toast(this.t("gameLoaded"));
-    }
-
-    exportData() {
-        const blob = new Blob(
-            [JSON.stringify(storage.exportData(), null, 2)],
-            { type: "application/json" }
-        );
-
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement("a");
-
-        link.href = url;
-        link.download = "lelele-chess-data.json";
-        link.click();
-
-        URL.revokeObjectURL(url);
-
-        this.toast(this.t("exportDone"));
-    }
-
-    importFile(event) {
-        const file = event.target.files?.[0];
-
-        if (!file) return;
-
-        file.text().then(text => {
-            try {
-                const success = storage.importData(
-                    JSON.parse(text)
-                );
-
-                if (success) {
-                    this.settings = storage.getSettings();
-
-                    if (this.settings.difficulty) {
-                        this.difficulty = this.settings.difficulty;
-                        this.fallbackAI.setDifficulty(
-                            this.difficulty
-                        );
-                        this.elements[
-                            "difficulty-select"
-                        ].value = this.difficulty;
-                    }
-
-                    languageManager.setLanguage(
-                        this.settings.language
-                    );
-                }
-
-                this.toast(
-                    success
-                        ? this.t("importDone")
-                        : this.t("importFailed")
-                );
-            } catch {
-                this.toast(this.t("importFailed"));
-            }
-        });
-
-        event.target.value = "";
-    }
+    const shortcuts = {
+      n: () => this.toggleNotes(), h: () => this.showHint(),
+      z: () => this.undo(), y: () => this.redo(),
+      Backspace: () => this.erase(), Delete: () => this.erase(),
+      " ": () => this.togglePause(), Escape: () => this.goHome()
+    };
+    const handler = shortcuts[key] ?? shortcuts[key.toLowerCase?.()];
+    if (handler) { event.preventDefault(); handler(); }
+  }
 }
 
-window.leleleChess = new ChessApp();
+window.leleleSudoku = new SudokuApp();
