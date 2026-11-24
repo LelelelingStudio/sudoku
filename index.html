@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#17130f">
+  <meta
+    name="description"
+    content="A cozy, modern chess game with local, computer, and online play."
+  >
+  <title>Chess — Lelele Games</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="./styles/main.css">
+  <link rel="stylesheet" href="./styles/board.css">
+  <link rel="stylesheet" href="./styles/components.css">
+  <link rel="stylesheet" href="./styles/animations.css">
+</head>
+<body>
+  <div id="app" class="app">
+    <header class="app-header">
+      <a class="brand" href="./" aria-label="Chess home">CHESS</a>
+      <div class="header-actions">
+        <button id="language-toggle" class="icon-button" type="button" aria-label="Switch language">中文</button>
+        <button id="settings-button" class="icon-button" type="button" data-i18n="settings">Settings</button>
+      </div>
+    </header>
+
+    <main id="main-content" class="main-content">
+      <section id="welcome-panel" class="welcome-panel" aria-labelledby="game-title">
+        <p class="eyebrow">LELELE GAMES</p>
+        <h1 id="game-title" data-i18n="gameTitle">Chess</h1>
+        <p class="welcome-copy" data-i18n="welcomeCopy">A quiet place to think, plan, and play.</p>
+
+        <div class="mode-actions" aria-label="Choose a game mode">
+          <button class="mode-button" type="button" data-mode="local">
+            <span class="mode-title" data-i18n="localGame">Local Game</span>
+            <span class="mode-description" data-i18n="playWithFriend">Play with Friend</span>
+          </button>
+          <button class="mode-button" type="button" data-mode="computer">
+            <span class="mode-title" data-i18n="playWithAI">Play vs AI</span>
+            <span class="mode-description" data-i18n="computerOpponent">Computer Opponent</span>
+          </button>
+          <button class="mode-button" type="button" data-mode="online">
+            <span class="mode-title" data-i18n="onlineGame">Online Game</span>
+            <span class="mode-description" data-i18n="onlineMultiplayer">Online Multiplayer</span>
+          </button>
+        </div>
+      </section>
+
+      <section id="game-screen" class="game-screen" hidden aria-label="Chess game">
+        <div id="game-status" class="game-status" role="status" aria-live="polite" data-state="playing">White to move</div>
+
+        <div id="online-panel" class="online-panel" hidden>
+          <div class="online-topbar">
+            <span id="connection-status" class="status-pill" data-status="disconnected">
+              <span class="status-dot"></span>
+              <span id="connection-label" data-i18n="disconnected">Disconnected</span>
+            </span>
+            <span id="online-room-code" class="status-pill" hidden></span>
+          </div>
+
+          <div class="online-lobby">
+            <button id="create-room-button" class="button-primary" type="button" data-i18n="createRoom">Create Room</button>
+            <div class="join-row">
+              <input id="room-input" class="form-input" type="text" inputmode="numeric" maxlength="4" placeholder="0000" aria-label="4-digit room code">
+              <button id="join-room-button" class="button-secondary" type="button" data-i18n="joinRoom">Join Room</button>
+            </div>
+          </div>
+
+          <div class="signaling-box">
+            <p id="online-hint" class="dialog-copy" data-i18n="signalingHelp">Room codes alone cannot connect browsers. Exchange the signaling texts below with your opponent.</p>
+            <label class="form-label" for="signal-local" data-i18n="yourSignal">Your signal (copy to opponent)</label>
+            <textarea id="signal-local" class="form-input" rows="3" readonly></textarea>
+            <div class="dialog-actions">
+              <button id="make-offer-button" class="button-secondary" type="button" data-i18n="generateInvite">Generate invite</button>
+              <button id="copy-signal-button" class="button-quiet" type="button" data-i18n="copySignal">Copy signal</button>
+            </div>
+            <label class="form-label" for="signal-remote" data-i18n="opponentSignal">Opponent's signal (paste here)</label>
+            <textarea id="signal-remote" class="form-input" rows="3" placeholder='{"type":"offer",...}'></textarea>
+            <div class="dialog-actions">
+              <button id="apply-signal-button" class="button-primary" type="button" data-i18n="applySignal">Apply signal</button>
+            </div>
+          </div>
+        </div>
+
+        <div id="ai-panel" class="ai-panel" hidden>
+          <label class="form-label" for="difficulty-select" data-i18n="difficulty">Difficulty</label>
+          <select id="difficulty-select" class="form-select">
+            <option value="easy" data-i18n="easy">Easy</option>
+            <option value="medium" data-i18n="medium">Medium</option>
+            <option value="hard" data-i18n="hard">Hard</option>
+          </select>
+        </div>
+
+        <div id="players-row" class="players-row">
+          <div class="player-panel">
+            <div class="player-info">
+              <span class="player-name" id="black-name" data-i18n="blackPlayer">Black Player</span>
+            </div>
+            <div id="captured-black" class="captured-panel" aria-label="Captured black pieces"></div>
+          </div>
+
+          <div class="player-panel">
+            <div class="player-info">
+              <span class="player-name" id="white-name" data-i18n="whitePlayer">White Player</span>
+            </div>
+            <div id="captured-white" class="captured-panel" aria-label="Captured white pieces"></div>
+          </div>
+        </div>
+
+        <div id="chessboard" class="chessboard" aria-label="Chessboard"></div>
+
+        <div class="board-sidebar">
+          <h2 class="sidebar-title" data-i18n="moveHistory">Move History</h2>
+          <div id="move-history" class="move-history"></div>
+        </div>
+
+        <div class="game-controls">
+          <button id="undo-button" type="button" data-i18n="undo">Undo</button>
+          <button id="redo-button" type="button" data-i18n="redo">Redo</button>
+          <button id="draw-button" type="button" data-i18n="offerDraw">Offer Draw</button>
+          <button id="resign-button" type="button" data-i18n="resign">Resign</button>
+          <button id="restart-button" type="button" data-i18n="restart">Restart</button>
+          <button id="back-button" type="button" data-i18n="back">Back</button>
+        </div>
+      </section>
+    </main>
+
+    <footer class="app-footer">
+      <span data-i18n="madeBy">Made by Lelele Games</span>
+      <span>Think carefully. Enjoy the game.</span>
+    </footer>
+  </div>
+
+  <div id="dialog-backdrop" class="dialog-backdrop" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+      <h2 id="dialog-title" class="dialog-title"></h2>
+      <p id="dialog-copy" class="dialog-copy"></p>
+      <div id="dialog-extra"></div>
+      <div id="dialog-actions" class="dialog-actions"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="notification" role="status" aria-live="polite" hidden></div>
+
+  <input id="import-file" type="file" accept="application/json,.json" hidden>
+
+  <script type="module" src="./src/main.js"></script>
+</body>
+</html>
